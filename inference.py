@@ -191,7 +191,7 @@ def main(script_args, model_args, inference_args):
 
     # load base model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_model = AutoModelForCausalLM.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path, 
         trust_remote_code=model_args.trust_remote_code,
         torch_dtype="auto",
@@ -217,10 +217,10 @@ def main(script_args, model_args, inference_args):
         padding=True,
         truncation=True,
         max_length=512,
-    ).to(peft_sft.device)
+    ).to(device)
 
     with torch.no_grad():
-        outputs = peft_sft.generate(
+        outputs = model.generate(
             **inputs,
             max_new_tokens=32,
             do_sample=False,
