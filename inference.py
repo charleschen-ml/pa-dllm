@@ -274,4 +274,4 @@ if __name__ == "__main__":
     )
     
     # Run inference
-    main(script_args, training_args, model_args, inference_args)
+    main(script_args, model_args, inference_args)
