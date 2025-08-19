@@ -106,7 +106,7 @@ def save_predictions_to_csv(predictions, references, output_csv_path):
     print(f"✅ Saved {len(rows)} results to {output_csv_path}")
 
 def make_parser(subparsers: argparse._SubParsersAction = None):
-    dataclass_types = (ScriptArguments, PPOConfig, ModelConfig)
+    dataclass_types = (ScriptArguments, ModelConfig)
     if subparsers is not None:
         parser = subparsers.add_parser("inference", help="Run the inference script", dataclass_types=dataclass_types)
     else:
@@ -247,18 +247,14 @@ def main(script_args, model_args, inference_args):
     return 0
 
 if __name__ == "__main__":
-    # parse script arguments
+    # Parse HF script_args, model_args
     parser = make_parser()
-    script_args, model_args, inference_args = parser.parse_args_into_dataclasses()
+    script_args, model_args = parser.parse_args_into_dataclasses()
     
-    # Parse inference-specific arguments
+    # Parse custom inference args
     args = parser.parse_args()
-    
-    # Convert string arguments to lists
-    bit_choices = [int(x.strip()) for x in args.bit_choices.split(",")]
-    quant_layers = [int(x.strip()) for x in args.quant_layers.split(",")]
-    
-    # Create inference arguments object
+    bit_choices = [int(x.strip()) for x in args.bit_choices.split(",")] # convert to list
+    quant_layers = [int(x.strip()) for x in args.quant_layers.split(",")] # convert to list
     inference_args = InferenceArguments(
         eval_json_path=args.eval_json_path,
         adapter_path=args.adapter_path,
