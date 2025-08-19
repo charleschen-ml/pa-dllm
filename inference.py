@@ -199,6 +199,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
             pad_token_id=tokenizer.eos_token_id,
         )
 
+    print(f"outputs=\n{outputs}")
+
     return tokenizer.decode(
         outputs[0][inputs["input_ids"].shape[-1]:],
         skip_special_tokens=True
