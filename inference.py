@@ -231,17 +231,8 @@ def main(script_args, model_args, inference_args):
     generated = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True).strip()
     # generated_truncated = generated.split("\n")[0].strip()
 
-    print("generated=\n{generated}")
+    print(f"generated=\n{generated}")
 
-    predictions.append({
-        "id": qid,
-        "prediction_text": generated
-    })
-
-    references.append({
-        "id": qid,
-        "answers": example["answers"]
-    }) 
     return 0
 
 if __name__ == "__main__":
