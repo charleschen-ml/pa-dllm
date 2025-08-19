@@ -19,8 +19,6 @@ from transformers import (
 )
 from trl import (
     ModelConfig,
-    PPOConfig,
-    PPOTrainer,
     ScriptArguments,
     get_kbit_device_map,
     get_peft_config,
@@ -147,7 +145,7 @@ def make_parser(subparsers: argparse._SubParsersAction = None):
                        help="Default bit for all layers")
     return parser
 
-def main(script_args, training_args, model_args, inference_args):
+def main(script_args, model_args, inference_args):
     """
     Args:
         script_args, training_args, model_args: Standard TRL arguments
