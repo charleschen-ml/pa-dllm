@@ -33,9 +33,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "t
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8" # To fix torch deterministic error
 torch.use_deterministic_algorithms(True)
 
-# Settings
-USE_DEBUG = False # Debug prints
-
 # Custom arguments for inference-specific parameters
 class InferenceArguments:
     def __init__(self, 
@@ -193,11 +190,12 @@ def main(script_args, model_args, inference_args):
         tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
 
     # load base model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     base_model = AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path, 
         trust_remote_code=model_args.trust_remote_code,
         torch_dtype="auto",
-    ).to("auto")
+    ).to(device)
     print(f"Loaded base model path: {model_args.model_name_or_path}")
 
     ################
