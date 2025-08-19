@@ -194,7 +194,6 @@ def main(script_args, model_args, inference_args):
     model = AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path, 
         trust_remote_code=model_args.trust_remote_code,
-        use_cache=False,
     ).to(device)
     print(f"Loaded base model path: {model_args.model_name_or_path}")
 
@@ -224,6 +223,7 @@ def main(script_args, model_args, inference_args):
             **inputs,
             max_new_tokens=32,
             do_sample=False,
+            use_cache=False, # required to disable KV cache
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id
         )
