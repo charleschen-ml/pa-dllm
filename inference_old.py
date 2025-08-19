@@ -262,62 +262,62 @@ def main(script_args, training_args, model_args, inference_args):
             if hasattr(module, "_lora_adapters") and hasattr(module, "_active_bit"):
                 print(f"{name} | Active bitwidth: {module._active_bit} | Available: {list(module._lora_adapters.keys())}")
 
-    # # Inference loop
-    # predictions, references = [], []
+    # Inference loop
+    predictions, references = [], []
 
-    # print("\nAFTER TRAINING:\n")
+    print("\nAFTER TRAINING:\n")
 
-    # USE_RPI = False # random precision inference (for adversarial robustness eval)
-    # if USE_RPI:
-    #     print("RPI enabled")
-    # for example in tqdm(dataset, desc="Evaluating", disable=True):
+    USE_RPI = False # random precision inference (for adversarial robustness eval)
+    if USE_RPI:
+        print("RPI enabled")
+    for example in tqdm(dataset, desc="Evaluating", disable=True):
 
-    #     if USE_RPI:
-    #         rpi_bit = random.choice(inference_args.bit_choices)
-    #         set_active_bitwidths(model=base_model, bit_config_dict={}, default_bit=rpi_bit)
+        if USE_RPI:
+            rpi_bit = random.choice(inference_args.bit_choices)
+            set_active_bitwidths(model=base_model, bit_config_dict={}, default_bit=rpi_bit)
 
-    #     context = example["context"].strip()
-    #     question = example["question"].strip()
-    #     qid = example.get("id", f"id_{len(predictions)}")
-    #     prompt = f"{context}\n{question}\n"
-    #     # print(f"prompt = \n{prompt}")
+        context = example["context"].strip()
+        question = example["question"].strip()
+        qid = example.get("id", f"id_{len(predictions)}")
+        prompt = f"{context}\n{question}\n"
+        # print(f"prompt = \n{prompt}")
 
-    #     inputs = tokenizer(
-    #         prompt,
-    #         return_tensors="pt",
-    #         padding=True,
-    #         truncation=True,
-    #         max_length=512,
-    #     ).to(peft_sft.device)
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
+        ).to(peft_sft.device)
 
-    #     # for name, module in peft_sft.named_modules(): 
-    #     #     if hasattr(module, "_lora_adapters"):
-    #     #         print(f"{name}: {list(module._lora_adapters.keys())}")
+        # for name, module in peft_sft.named_modules(): 
+        #     if hasattr(module, "_lora_adapters"):
+        #         print(f"{name}: {list(module._lora_adapters.keys())}")
 
-    #     with torch.no_grad():
-    #         outputs = peft_sft.generate(
-    #             **inputs,
-    #             max_new_tokens=32,
-    #             do_sample=False,
-    #             eos_token_id=tokenizer.eos_token_id,
-    #             pad_token_id=tokenizer.eos_token_id
-    #         )
+        with torch.no_grad():
+            outputs = peft_sft.generate(
+                **inputs,
+                max_new_tokens=32,
+                do_sample=False,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.eos_token_id
+            )
 
-    #     generated = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True).strip()
-    #     generated_truncated = generated.split("\n")[0].strip()
+        generated = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True).strip()
+        generated_truncated = generated.split("\n")[0].strip()
 
-    #     predictions.append({
-    #         "id": qid,
-    #         "prediction_text": generated
-    #     })
+        predictions.append({
+            "id": qid,
+            "prediction_text": generated
+        })
 
-    #     references.append({
-    #         "id": qid,
-    #         "answers": example["answers"]
-    #     })
+        references.append({
+            "id": qid,
+            "answers": example["answers"]
+        })
 
-    # results = score_squad(predictions, references)
-    # save_predictions_to_csv(predictions, references, inference_args.output_csv_path)
+    results = score_squad(predictions, references)
+    save_predictions_to_csv(predictions, references, inference_args.output_csv_path)
     
     return results
 

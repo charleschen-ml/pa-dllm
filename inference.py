@@ -31,12 +31,7 @@ from trl.trainer.utils import SIMPLE_CHAT_TEMPLATE
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "training")))
-from qat import (
-    patch_linear_forward_with_switchable_quantization,
-    set_active_bitwidths,
-    add_bitwise_lora_adapters
-)
-import os
+
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8" # To fix torch deterministic error
 torch.use_deterministic_algorithms(True)
 
@@ -169,11 +164,10 @@ def main(script_args, training_args, model_args, inference_args):
     else:
         quant_layers = inference_args.quant_layers
     
-    
     # Load validation examples from JSON
-    with open(inference_args.eval_json_path, "r") as f:
-        dataset = [json.loads(line) for line in f][:inference_args.max_inf_size]
-    print(f"Examples used for inference: {len(dataset)}")
+    # with open(inference_args.eval_json_path, "r") as f:
+    #     dataset = [json.loads(line) for line in f][:inference_args.max_inf_size]
+    # print(f"Examples used for inference: {len(dataset)}")
 
     ################
     # Model & Tokenizer
@@ -192,7 +186,9 @@ def main(script_args, training_args, model_args, inference_args):
 
     # load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path, padding_side="left", trust_remote_code=model_args.trust_remote_code
+        model_args.model_name_or_path, 
+        padding_side="left", 
+        trust_remote_code=model_args.trust_remote_code,
     )
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     if tokenizer.chat_template is None:
@@ -200,52 +196,56 @@ def main(script_args, training_args, model_args, inference_args):
 
     # load base model
     base_model = AutoModelForCausalLM.from_pretrained(
-        model_args.model_name_or_path, trust_remote_code=model_args.trust_remote_code
-    ).to("cuda")
+        model_args.model_name_or_path, 
+        trust_remote_code=model_args.trust_remote_code,
+        torch_dtype="auto",
+    ).to("auto")
     print(f"Loaded base model path: {model_args.model_name_or_path}")
-
-    # Set quantization config to match training
-    if inference_args.use_quantization:
-        patch_linear_forward_with_switchable_quantization(base_model, bit_widths=bit_choices, quant_layers=quant_layers)
-        add_bitwise_lora_adapters(base_model, bit_widths=bit_choices, quant_layers=quant_layers)
-
-        # Dummy forward to create LoRA modules, which are created at run time to fix matrix dim mismatch error
-        dummy_input = tokenizer("hello", return_tensors="pt").to(base_model.device)
-        _ = base_model(**dummy_input)
-
-        state_dict = torch.load(inference_args.bitwise_lora_adapter_path, map_location="cpu")
-        base_model.load_state_dict(state_dict)
-        base_model.to("cuda")
-        set_active_bitwidths(base_model, inference_args.inf_bit_config, inference_args.default_bit)
-        base_model.eval()
 
     ################
     # Inference
     ################
 
-    # Load sft-trained peft model
-    if inference_args.use_bitwise_lora:
-        peft_sft = base_model # use base model for bitwise lora
-    else:
-        peft_sft = PeftModel.from_pretrained(base_model, inference_args.adapter_path)  # Load peft model
-        peft_sft.eval()
+    # Inference loop
+    predictions, references = [], []
 
-    if USE_DEBUG:
-        # Print created lora
-        print("\n🔍 Created LoRA Adapters:")
-        for name, module in peft_sft.named_modules():
-            if hasattr(module, "_lora_adapters"):
-                for bw, lora in module._lora_adapters.items():
-                    weights = list(lora.parameters())
-                    norm = sum(p.norm().item() for p in weights)
-                    print(f"{name} | {bw}-bit LoRA norm: {norm:.4f}")
+    print("\nINFERENCE:\n")
 
-        # Print active lora
-        print("\n🔍 Active LoRA Adapters:")
-        for name, module in peft_sft.named_modules():
-            if hasattr(module, "_lora_adapters") and hasattr(module, "_active_bit"):
-                print(f"{name} | Active bitwidth: {module._active_bit} | Available: {list(module._lora_adapters.keys())}")
-    
+    question = "What is 2*2?"
+    prompt = f"{question}\n"
+    print(f"prompt = \n{prompt}")
+
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=512,
+    ).to(peft_sft.device)
+
+    with torch.no_grad():
+        outputs = peft_sft.generate(
+            **inputs,
+            max_new_tokens=32,
+            do_sample=False,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id
+        )
+
+    generated = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True).strip()
+    # generated_truncated = generated.split("\n")[0].strip()
+
+    print("generated=\n{generated}")
+
+    predictions.append({
+        "id": qid,
+        "prediction_text": generated
+    })
+
+    references.append({
+        "id": qid,
+        "answers": example["answers"]
+    }) 
     return 0
 
 if __name__ == "__main__":
