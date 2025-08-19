@@ -249,7 +249,7 @@ def main(script_args, model_args, inference_args):
 if __name__ == "__main__":
     # parse script arguments
     parser = make_parser()
-    script_args, model_args = parser.parse_args_into_dataclasses()
+    script_args, model_args, inference_args = parser.parse_args_into_dataclasses()
     
     # Parse inference-specific arguments
     args = parser.parse_args()
