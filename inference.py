@@ -142,6 +142,68 @@ def make_parser(subparsers: argparse._SubParsersAction = None):
                        help="Default bit for all layers")
     return parser
 
+# -----------------------------
+# 1) Load once, reuse everywhere
+# -----------------------------
+def load_model(model_args):
+    """Load tokenizer + model once and return (model, tokenizer, device).
+    Works for normal and k-bit quantized loads depending on model_args.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        padding_side="left",
+        trust_remote_code=getattr(model_args, "trust_remote_code", True),
+    )
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    if getattr(tokenizer, "chat_template", None) is None:
+        tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
+
+    # Model
+    quantization_config = get_quantization_config(model_args)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_args.model_name_or_path,
+        trust_remote_code=getattr(model_args, "trust_remote_code", True),
+        quantization_config=quantization_config,
+        device_map=get_kbit_device_map() if quantization_config is not None else None,
+    ).to(device)
+
+    print(f"✅ Loaded model: {model_args.model_name_or_path} on {device}")
+    return model, tokenizer, device
+
+# -----------------------------
+# 2) Reusable inference runner
+# -----------------------------
+
+def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False):
+    """Run a single prompt without reloading the model.
+    Pass model_args.use_cache=False for LLaDA/MDM-style models.
+    """
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=512,
+    ).to(device)
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            use_cache=getattr(model_args, "use_cache", False),  # LLaDA requires False
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    return tokenizer.decode(
+        outputs[0][inputs["input_ids"].shape[-1]:],
+        skip_special_tokens=True
+    ).strip()
+
 def main(script_args, model_args, inference_args):
     """
     Args:
