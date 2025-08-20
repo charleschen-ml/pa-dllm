@@ -33,6 +33,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "t
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8" # To fix torch deterministic error
 torch.use_deterministic_algorithms(True)
 
+from generate import generate # generate.py from llada github
+
 # Custom arguments for inference-specific parameters
 class InferenceArguments:
     def __init__(self, 
@@ -206,17 +208,15 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     #         pad_token_id=tokenizer.eos_token_id,
     #     )
 
-    with torch.no_grad():
-        out = generate(
-            model, 
-            input_ids, 
-            steps=128, 
-            gen_length=128, 
-            block_length=32, 
-            temperature=0., 
-            cfg_scale=0., 
-            remasking='low_confidence'
-        )
+    out = generate(
+        model, 
+        input_ids, 
+        steps=128, 
+        gen_length=128, 
+        block_length=32, 
+        temperature=0., 
+        cfg_scale=0., 
+        remasking='low_confidence'
 
     print(tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
 
