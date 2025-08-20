@@ -203,6 +203,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     m = [{"role": "user", "content": prompt}, ]
     prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
 
+    print(f"prompt=\n{prompt}")
+
     input_ids = tokenizer(prompt)['input_ids']
     input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
 
