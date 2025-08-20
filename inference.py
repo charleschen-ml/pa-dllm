@@ -217,6 +217,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
         temperature=0., 
         cfg_scale=0., 
         remasking='low_confidence'
+    )
 
     print(tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
 
