@@ -211,7 +211,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     print(f"input_ids=\n{input_ids}")
 
     # debug
-    inputs_decoded = tokenizer.decode(input_ids, skip_special_tokens=False)
+    inputs_decoded = tokenizer.decode(input_ids[0], skip_special_tokens=False)
     print(f"decoded inputs=\n{inputs_decoded}")
 
     # inputs = tokenizer(
