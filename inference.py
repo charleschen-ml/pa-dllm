@@ -153,24 +153,27 @@ def load_model(model_args):
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-        padding_side="left",
-        trust_remote_code=getattr(model_args, "trust_remote_code", True),
-    )
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    if getattr(tokenizer, "chat_template", None) is None:
-        tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
+    # # Tokenizer
+    # tokenizer = AutoTokenizer.from_pretrained(
+    #     model_args.model_name_or_path,
+    #     padding_side="left",
+    #     trust_remote_code=getattr(model_args, "trust_remote_code", True),
+    # )
+    # tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    # if getattr(tokenizer, "chat_template", None) is None:
+    #     tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
 
-    # Model
-    quantization_config = get_quantization_config(model_args)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_args.model_name_or_path,
-        trust_remote_code=getattr(model_args, "trust_remote_code", True),
-        quantization_config=quantization_config,
-        device_map=get_kbit_device_map() if quantization_config is not None else None,
-    ).to(device)
+    # # Model
+    # quantization_config = get_quantization_config(model_args)
+    # model = AutoModelForCausalLM.from_pretrained(
+    #     model_args.model_name_or_path,
+    #     trust_remote_code=getattr(model_args, "trust_remote_code", True),
+    #     quantization_config=quantization_config,
+    #     device_map=get_kbit_device_map() if quantization_config is not None else None,
+    # ).to(device)
+
+    model = AutoModel.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True, torch_dtype=torch.bfloat16).to(device).eval()
+    tokenizer = AutoTokenizer.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True)
 
     print(f"✅ Loaded model: {model_args.model_name_or_path} on {device}")
     return model, tokenizer, device
