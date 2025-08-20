@@ -173,8 +173,15 @@ def load_model(model_args):
     #     device_map=get_kbit_device_map() if quantization_config is not None else None,
     # ).to(device)
 
-    model = AutoModel.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True, torch_dtype=torch.bfloat16).to(device).eval()
-    tokenizer = AutoTokenizer.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True)
+    model = AutoModel.from_pretrained(
+        'GSAI-ML/LLaDA-8B-Instruct', 
+        trust_remote_code=True, 
+        torch_dtype=torch.bfloat16
+    ).to(device).eval()
+    tokenizer = AutoTokenizer.from_pretrained(
+        'GSAI-ML/LLaDA-8B-Instruct', 
+        trust_remote_code=True
+    )
 
     print(f"✅ Loaded model: {model_args.model_name_or_path} on {device}")
     return model, tokenizer, device
