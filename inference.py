@@ -202,6 +202,10 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     input_ids = tokenizer(prompt)['input_ids']
     input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
 
+    # debug
+    inputs_decoded = tokenizer.decode(inputs_ids, skip_special_tokens=False)
+    print(f"decoded inputs=\n{inputs_decoded}")
+
     # inputs = tokenizer(
     #     prompt,
     #     return_tensors="pt",
@@ -233,10 +237,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
 
     print(tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
 
-    # print(f"inputs=\n{inputs}") 
-    # inputs_ids = inputs["input_ids"][0]
-    # inputs_decoded = tokenizer.decode(inputs_ids, skip_special_tokens=False)
-    # print(f"decoded inputs=\n{inputs_decoded}")
+    # debug
     # outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
     # print(f"outputs_ids=\n{outputs_ids}")
     # outputs_decoded = tokenizer.decode(outputs_ids, skip_special_tokens=False)
