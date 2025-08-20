@@ -200,8 +200,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
         )
 
     outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
-    print(f"outputs_ids=\n{output_ids}")
-    outputs_decoded = tokenizer.decode(output_ids, skip_special_tokens=True)
+    print(f"outputs_ids=\n{outputs_ids}")
+    outputs_decoded = tokenizer.decode(outputs_ids, skip_special_tokens=True)
     print(f"decoded output=\n{outputs_decoded}")
 
     return
