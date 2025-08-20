@@ -203,7 +203,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
 
     # debug
-    inputs_decoded = tokenizer.decode(inputs_ids, skip_special_tokens=False)
+    inputs_decoded = tokenizer.decode(input_ids, skip_special_tokens=False)
     print(f"decoded inputs=\n{inputs_decoded}")
 
     # inputs = tokenizer(
