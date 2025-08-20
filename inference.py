@@ -195,6 +195,9 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     """
+
+    print(f"prompt=\n{prompt}")
+
     # Add special tokens for the Instruct model (not required for base model)
     m = [{"role": "user", "content": prompt}, ]
     prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
