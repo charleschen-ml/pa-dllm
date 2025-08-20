@@ -185,32 +185,49 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     m = [{"role": "user", "content": prompt}, ]
     prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
 
-    inputs = tokenizer(
-        prompt,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=512,
-    ).to(device)
+    input_ids = tokenizer(prompt)['input_ids']
+    input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
+
+    # inputs = tokenizer(
+    #     prompt,
+    #     return_tensors="pt",
+    #     padding=True,
+    #     truncation=True,
+    #     max_length=512,
+    # ).to(device)
+
+    # with torch.no_grad():
+    #     outputs = model.generate(
+    #         **inputs,
+    #         max_new_tokens=max_new_tokens,
+    #         do_sample=do_sample,
+    #         use_cache=getattr(model_args, "use_cache", False),  # LLaDA requires False
+    #         eos_token_id=tokenizer.eos_token_id,
+    #         pad_token_id=tokenizer.eos_token_id,
+    #     )
 
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=do_sample,
-            use_cache=getattr(model_args, "use_cache", False),  # LLaDA requires False
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id,
+        out = generate(
+            model, 
+            input_ids, 
+            steps=128, 
+            gen_length=128, 
+            block_length=32, 
+            temperature=0., 
+            cfg_scale=0., 
+            remasking='low_confidence'
         )
 
-    print(f"inputs=\n{inputs}") 
-    inputs_ids = inputs["input_ids"][0]
-    inputs_decoded = tokenizer.decode(inputs_ids, skip_special_tokens=False)
-    print(f"decoded inputs=\n{inputs_decoded}")
-    outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
-    print(f"outputs_ids=\n{outputs_ids}")
-    outputs_decoded = tokenizer.decode(outputs_ids, skip_special_tokens=False)
-    print(f"decoded output=\n{outputs_decoded}")
+    print(tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
+
+    # print(f"inputs=\n{inputs}") 
+    # inputs_ids = inputs["input_ids"][0]
+    # inputs_decoded = tokenizer.decode(inputs_ids, skip_special_tokens=False)
+    # print(f"decoded inputs=\n{inputs_decoded}")
+    # outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
+    # print(f"outputs_ids=\n{outputs_ids}")
+    # outputs_decoded = tokenizer.decode(outputs_ids, skip_special_tokens=False)
+    # print(f"decoded output=\n{outputs_decoded}")
 
     return
 
