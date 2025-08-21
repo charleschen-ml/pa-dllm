@@ -92,11 +92,14 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
 
             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
             x0 = torch.argmax(logits_with_noise, dim=-1) # get index with highest logits at each position
+            print(f"DEBUG: x0 first 5 elements: {x0[0, :5].tolist()}")
 
             if remasking == 'low_confidence':
                 p = F.softmax(logits, dim=-1) # convert logits to probs
+                print(f"DEBUG: p first 5 elements: {p[0, :5, :5].tolist()}")
                 x0_p = torch.squeeze( # extract prob of predicted token at each position
                     torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+                print(f"DEBUG: x0_p first 5 elements: {x0_p[0, :5].tolist()}")
             elif remasking == 'random':
                 x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
             else:
