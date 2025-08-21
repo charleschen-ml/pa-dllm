@@ -73,9 +73,12 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
     print("\nstart denoise loop:\n")
 
     for num_block in range(num_blocks):
+        print(f"DEBUG: Starting block {num_block}/{num_blocks}, block_length={block_length}")
         block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:] == mask_id)
         num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
+        print(f"num_transfer_tokens = {num_transfer_tokens}")
         for i in range(steps):
+            print(f"DEBUG: Block {num_block}, Step {i}/{steps}, Transfer tokens: {num_transfer_tokens[0, i].item()}")
             mask_index = (x == mask_id)
             if cfg_scale > 0.:
                 un_x = x.clone()
