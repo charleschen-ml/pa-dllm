@@ -66,6 +66,9 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
     assert steps % num_blocks == 0
     steps = steps // num_blocks
 
+    # debug
+    print("\nstart denoise loop:\n")
+
     for num_block in range(num_blocks):
         block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:] == mask_id)
         num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
@@ -82,11 +85,11 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
                 logits = model(x).logits
 
             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
-            x0 = torch.argmax(logits_with_noise, dim=-1) # b, l
+            x0 = torch.argmax(logits_with_noise, dim=-1) # get index with highest logits at each position
 
             if remasking == 'low_confidence':
-                p = F.softmax(logits, dim=-1)
-                x0_p = torch.squeeze(
+                p = F.softmax(logits, dim=-1) # convert logits to probs
+                x0_p = torch.squeeze( # extract prob of predicted token at each position
                     torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
             elif remasking == 'random':
                 x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
