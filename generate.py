@@ -77,10 +77,10 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
 
     for num_block in range(num_blocks):
 
-        # update boolean mask: set all tokens in current block to <mask>
+        # initialize boolean mask to all <mask> in current block
         block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:] == mask_id)
 
-        # calculate numnber of tokens to unmask at each step
+        # calculate number of tokens to unmask at each step
         num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
 
         for i in range(steps):
