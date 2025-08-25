@@ -237,8 +237,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
         model, 
         input_ids, 
         steps=4, 
-        gen_length=64, 
-        block_length=16, 
+        gen_length=16, 
+        block_length=4, 
         temperature=0., 
         cfg_scale=0., 
         remasking='low_confidence'
