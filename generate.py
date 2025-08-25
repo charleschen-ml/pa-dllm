@@ -112,6 +112,9 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
             # mask out tokens beyond the current block
             x0_p[:, prompt.shape[1] + (num_block + 1) * block_length:] = -np.inf
 
+            # torch.where(mask, tensor_A, tensor_B): if mask_index is True, use tensor A, otherwise use tensor B
+            # if token is true (masked), use x0 (token index with highest logit)
+            # otherwise use x (original token)
             x0 = torch.where(mask_index, x0, x)
             confidence = torch.where(mask_index, x0_p, -np.inf)
 
