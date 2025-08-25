@@ -119,8 +119,15 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
             confidence = torch.where(mask_index, x0_p, -np.inf)
 
             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            for j in range(confidence.shape[0]):
+            for j in range(confidence.shape[0]): # loop through each batch
+                # torch.topk(input, k): selects the top k tokens from input (list)
+                # returns (values, indices)
                 _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
+                
+                # Use "advanced indexing" to set all indices in select_index
+                # This is equivalent to saying:
+                # for index in select_index:
+                #   transfer_index[j, index] = True
                 transfer_index[j, select_index] = True
             x[transfer_index] = x0[transfer_index]
 
