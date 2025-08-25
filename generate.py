@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from transformers import AutoTokenizer, AutoModel
 
@@ -75,7 +76,7 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
     # debug
     print("\nstart denoise loop:\n")
 
-    for num_block in range(num_blocks):
+    for num_block in tqdm(range(num_blocks), desc="Processing blocks"):
 
         # initialize boolean mask to all <mask> in current block
         block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:] == mask_id)
@@ -83,7 +84,7 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
         # calculate number of tokens to unmask at each step
         num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
 
-        for i in range(steps):
+        for i in tqdm(range(steps), desc=f"Block {num_block+1}/{num_blocks}", leave=False):
             mask_index = (x == mask_id) # update the boolean mask (since last step)
             if cfg_scale > 0.:
                 un_x = x.clone()
