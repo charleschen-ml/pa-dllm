@@ -27,7 +27,7 @@ def get_num_transfer_tokens(mask_index, steps):
 
     This function is designed to precompute the number of tokens that need to be transitioned at each step.
     '''
-    mask_num = mask_index.sum(dim=1, keepdim=True)
+    mask_num = mask_index.sum(dim=1, keepdim=True) # count total of masked tokens
 
     base = mask_num // steps
     remainder = mask_num % steps
@@ -58,28 +58,33 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
     # debug
     print("\nstart generate:\n")
 
+    # Create x = prompt + completion 
     x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(model.device)
-    x[:, :prompt.shape[1]] = prompt.clone()
+    x[:, :prompt.shape[1]] = prompt.clone() # initialize prompt, while leaving completion tokens as <mask>
 
-    prompt_index = (x != mask_id)
+    prompt_index = (x != mask_id) # create boolean mask with prompt = T, completion = F
+                                # e.g. [T, T, T, ..., F, F, F, ...]
+                                # used later if cfg enabled
 
     assert gen_length % block_length == 0
     num_blocks = gen_length // block_length
 
     assert steps % num_blocks == 0
-    steps = steps // num_blocks
+    steps = steps // num_blocks # total_steps -> steps_per_block
 
     # debug
     print("\nstart denoise loop:\n")
 
     for num_block in range(num_blocks):
-        print(f"DEBUG: Starting block {num_block}/{num_blocks}, block_length={block_length}")
+
+        # update boolean mask: set all tokens in current block to <mask>
         block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:] == mask_id)
+
+        # calculate numnber of tokens to unmask at each step
         num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
-        print(f"num_transfer_tokens = {num_transfer_tokens}")
+
         for i in range(steps):
-            print(f"DEBUG: Block {num_block}, Step {i}/{steps}, Transfer tokens: {num_transfer_tokens[0, i].item()}")
-            mask_index = (x == mask_id)
+            mask_index = (x == mask_id) # update the boolean mask (since last step)
             if cfg_scale > 0.:
                 un_x = x.clone()
                 un_x[prompt_index] = mask_id
@@ -88,18 +93,15 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
                 logits, un_logits = torch.chunk(logits, 2, dim=0)
                 logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
             else:
-                logits = model(x).logits
+                logits = model(x).logits # get logits with current x
 
             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
-            x0 = torch.argmax(logits_with_noise, dim=-1) # get index with highest logits at each position
-            print(f"DEBUG: x0 first 5 elements: {x0[0, :5].tolist()}")
+            x0 = torch.argmax(logits_with_noise, dim=-1) # get token_id with highest logit at each position
 
             if remasking == 'low_confidence':
                 p = F.softmax(logits, dim=-1) # convert logits to probs
-                print(f"DEBUG: p first 5 elements: {p[0, :5, :5].tolist()}")
                 x0_p = torch.squeeze( # extract prob of predicted token at each position
                     torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
-                print(f"DEBUG: x0_p first 5 elements: {x0_p[0, :5].tolist()}")
             elif remasking == 'random':
                 x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
             else:
