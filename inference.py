@@ -236,15 +236,15 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     out = generate(
         model, 
         input_ids, 
-        steps=1, 
+        steps=4, 
         gen_length=64, 
-        block_length=64, 
+        block_length=16, 
         temperature=0., 
         cfg_scale=0., 
         remasking='low_confidence'
     )
 
-    print(tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
+    print("\n" + tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
 
     # debug
     # outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
