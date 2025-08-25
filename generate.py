@@ -96,17 +96,20 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
                 logits = model(x).logits # get logits with current x
 
             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
-            x0 = torch.argmax(logits_with_noise, dim=-1) # get token_id with highest logit at each position
+            x0 = torch.argmax(logits_with_noise, dim=-1) # get index of token with highest logit at each position
 
             if remasking == 'low_confidence':
                 p = F.softmax(logits, dim=-1) # convert logits to probs
-                x0_p = torch.squeeze( # extract prob of predicted token at each position
+                
+                # extract prob at each position with highest logit
+                x0_p = torch.squeeze( 
                     torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
             elif remasking == 'random':
                 x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
             else:
                 raise NotImplementedError(remasking)
 
+            # mask out tokens beyond the current block
             x0_p[:, prompt.shape[1] + (num_block + 1) * block_length:] = -np.inf
 
             x0 = torch.where(mask_index, x0, x)
