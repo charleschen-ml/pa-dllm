@@ -198,6 +198,11 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
 
         print(f"Starting block {num_block+1}/{num_blocks} (size: {block_size})")
 
+        # Skip blocks with zero size
+        if block_size == 0:
+            print(f"Skipping block {num_block+1} (size: 0)")
+            continue
+
         # initialize boolean mask to all <mask> in current block
         block_mask_index = (x[:, prompt.shape[1] + block_start: prompt.shape[1] + block_end] == mask_id)
 
