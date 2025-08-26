@@ -305,13 +305,16 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position, sweep_v
         if adjustment > remaining_blocks * base_block_length:
             raise ValueError(f"sweep_value ({sweep_value}) too large for gen_length ({gen_length})")
         
-        # Reduce other blocks by 1 each from the end until we have enough space
+        # Reduce blocks from the end: last block goes to 0 first, then second-to-last to 1, etc.
         blocks_to_reduce = adjustment
-        for j in range(len(block_sizes) - 1, -1, -1):  # Iterate from end to beginning
-            if j != sweep_position and blocks_to_reduce > 0:
-                if block_sizes[j] > 0:  # Allow going to 0
-                    block_sizes[j] -= 1
-                    blocks_to_reduce -= 1
+        j = len(block_sizes) - 1  # Start from last block
+        while blocks_to_reduce > 0 and j >= 0:
+            if j != sweep_position:
+                # Reduce this block completely before moving to the next
+                reduction = min(blocks_to_reduce, block_sizes[j])
+                block_sizes[j] -= reduction
+                blocks_to_reduce -= reduction
+            j -= 1
         
         if blocks_to_reduce > 0:
             raise ValueError(f"Cannot accommodate sweep_value ({sweep_value}) with given parameters")
