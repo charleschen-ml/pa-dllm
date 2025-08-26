@@ -309,7 +309,7 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position, sweep_v
         blocks_to_reduce = adjustment
         for j in range(len(block_sizes) - 1, -1, -1):  # Iterate from end to beginning
             if j != sweep_position and blocks_to_reduce > 0:
-                if block_sizes[j] > 1:
+                if block_sizes[j] > 0:  # Allow going to 0
                     block_sizes[j] -= 1
                     blocks_to_reduce -= 1
         
