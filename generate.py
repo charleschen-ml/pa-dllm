@@ -71,7 +71,7 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
     assert steps % num_blocks == 0
     steps = steps // num_blocks # convert total_steps to steps_per_block
 
-    for num_block in tqdm(range(num_blocks), desc="Processing blocks"):
+    for num_block in range(num_blocks):
 
         # initialize boolean mask to all <mask> in current block
         block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:] == mask_id)
