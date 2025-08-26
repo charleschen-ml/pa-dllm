@@ -236,8 +236,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     out = generate(
         model, 
         input_ids, 
-        steps=8, 
-        gen_length=16, 
+        steps=16, 
+        gen_length=32, 
         block_length=2, 
         temperature=0., 
         cfg_scale=0., 
