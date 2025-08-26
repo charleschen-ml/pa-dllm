@@ -264,8 +264,8 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                 first_correct_step = total_step
             print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
 
-    print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else 'Never'}")
-    return x
+    print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")
+    return x, first_correct_step if first_correct_step is not None else float('inf')
 
 def main():
     device = 'cuda'

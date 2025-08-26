@@ -295,24 +295,32 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     # )
 
     # custom generate with block size as list
-    block_sizes = calculate_block_sizes(
-        gen_length=32, 
-        base_block_length=2, 
-        sweep_position=0, 
-        sweep_value=3
-    )
-    print(f"block_sizes = {block_sizes}\n")
-    out = generate_custom(
-        model, 
-        tokenizer, # charles added
-        input_ids, 
-        steps=16, 
-        gen_length=32, 
-        block_sizes=block_sizes, 
-        temperature=0., 
-        cfg_scale=0., 
-        remasking='low_confidence'
-    )
+    first_correct_steps = []
+    for sweep_value in range(2:4):
+        block_sizes = calculate_block_sizes(
+            gen_length=32, 
+            base_block_length=2, 
+            sweep_position=0, 
+            sweep_value=3
+        )
+        print(f"block_sizes = {block_sizes}\n")
+        out, first_correct_step = generate_custom(
+            model, 
+            tokenizer, # charles added
+            input_ids, 
+            steps=16, 
+            gen_length=32, 
+            block_sizes=block_sizes, 
+            temperature=0., 
+            cfg_scale=0., 
+            remasking='low_confidence'
+        )
+        first_correct_steps.append(first_correct_step)
+    
+    # Print the list of first_correct_steps and find the minimum
+    print(f"\nFirst correct steps: {first_correct_steps}")
+    min_step = min(first_correct_steps)
+    print(f"Minimum first correct step: {min_step}")
 
     out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
     print("\n" + out_text)
