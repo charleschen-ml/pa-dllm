@@ -150,6 +150,70 @@ def extract_boxed(text):
     match = re.search(r'\\boxed{(\d+)}', text)
     return int(match.group(1)) if match else None
 
+def calculate_block_sizes(gen_length, base_block_length, sweep_position, sweep_value):
+    '''
+    Calculate block sizes for sweeping experiments.
+    
+    Args:
+        gen_length: Total generation length
+        base_block_length: Base block length (e.g., 2)
+        sweep_position: Which block to sweep (0-indexed)
+        sweep_value: Value to set at sweep position
+    
+    Returns:
+        List of block sizes that sum to gen_length
+        
+    Example:
+        calculate_block_sizes(32, 2, 0, 8) -> [8, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+        calculate_block_sizes(32, 2, 1, 8) -> [2, 8, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+    '''
+    # Calculate how many base blocks we need
+    num_base_blocks = gen_length // base_block_length
+    
+    # Create list of base block sizes
+    block_sizes = [base_block_length] * num_base_blocks
+    
+    # Validate sweep position
+    if sweep_position >= len(block_sizes):
+        raise ValueError(f"sweep_position ({sweep_position}) must be less than number of blocks ({len(block_sizes)})")
+    
+    # Calculate the adjustment needed
+    adjustment = sweep_value - base_block_length
+    
+    # Check if adjustment is possible
+    if adjustment > 0:
+        # Need to reduce other blocks to accommodate larger sweep block
+        remaining_blocks = len(block_sizes) - 1
+        if adjustment > remaining_blocks * base_block_length:
+            raise ValueError(f"sweep_value ({sweep_value}) too large for gen_length ({gen_length})")
+        
+        # Reduce blocks from the end: last block goes to 0 first, then second-to-last to 1, etc.
+        blocks_to_reduce = adjustment
+        j = len(block_sizes) - 1  # Start from last block
+        while blocks_to_reduce > 0 and j >= 0:
+            if j != sweep_position:
+                # Reduce this block completely before moving to the next
+                reduction = min(blocks_to_reduce, block_sizes[j])
+                block_sizes[j] -= reduction
+                blocks_to_reduce -= reduction
+            j -= 1
+        
+        if blocks_to_reduce > 0:
+            raise ValueError(f"Cannot accommodate sweep_value ({sweep_value}) with given parameters")
+    
+    # Set the sweep position
+    block_sizes[sweep_position] = sweep_value
+    
+    # Validate total
+    total = sum(block_sizes)
+    if total != gen_length:
+        raise ValueError(f"Calculated block sizes sum to {total}, expected {gen_length}")
+    
+    # Remove zero elements
+    block_sizes = [size for size in block_sizes if size > 0]
+    
+    return block_sizes
+
 # -----------------------------
 # 1) Load once, reuse everywhere
 # -----------------------------
@@ -217,31 +281,33 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     inputs_decoded = tokenizer.decode(input_ids[0], skip_special_tokens=True)
     print(f"decoded inputs=\n{inputs_decoded}")
 
-    # inputs = tokenizer(
-    #     prompt,
-    #     return_tensors="pt",
-    #     padding=True,
-    #     truncation=True,
-    #     max_length=512,
-    # ).to(device)
+    # # original llada generate()
+    # out = generate(
+    #     model, 
+    #     tokenizer, # charles added
+    #     input_ids, 
+    #     steps=16, 
+    #     gen_length=32, 
+    #     block_length=2, 
+    #     temperature=0., 
+    #     cfg_scale=0., 
+    #     remasking='low_confidence'
+    # )
 
-    # with torch.no_grad():
-    #     outputs = model.generate(
-    #         **inputs,
-    #         max_new_tokens=max_new_tokens,
-    #         do_sample=do_sample,
-    #         use_cache=getattr(model_args, "use_cache", False),  # LLaDA requires False
-    #         eos_token_id=tokenizer.eos_token_id,
-    #         pad_token_id=tokenizer.eos_token_id,
-    #     )
-
-    out = generate(
+    # custom generate with block size as list
+    block_sizes = calculate_block_sizes(
+        gen_length=32, 
+        base_block_length=2, 
+        sweep_position=0, 
+        sweep_value=2
+    )
+    out = generate_custom(
         model, 
         tokenizer, # charles added
         input_ids, 
         steps=16, 
         gen_length=32, 
-        block_length=2, 
+        block_sizes=block_sizes, 
         temperature=0., 
         cfg_scale=0., 
         remasking='low_confidence'
