@@ -346,7 +346,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
             0: 23, 
             1: 2, 
             2: 2,
-            3: sweep_value,}
+            3: 3,
+            4: sweep_value}
         block_sizes = calculate_block_sizes(
             gen_length=32, 
             base_block_length=2, 
