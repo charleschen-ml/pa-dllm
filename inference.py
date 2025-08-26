@@ -341,36 +341,53 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     optimal_block_sizes = None
     min_step = float('inf')
     
-    for sweep_value in range(1, 3):
-        manual_settings = {
-            0: 23, 
-            1: 2, 
-            2: 2,
-            3: 3,
-            4: sweep_value}
-        block_sizes = calculate_block_sizes(
-            gen_length=32, 
-            base_block_length=2, 
-            manual_settings=manual_settings,
-        )
-        print(f"block_sizes = {block_sizes}\n")
-        out, first_correct_step = generate_custom(
-            model, 
-            tokenizer, # charles added
-            input_ids, 
-            steps=16, 
-            gen_length=32, 
-            block_sizes=block_sizes, 
-            temperature=0., 
-            cfg_scale=0., 
-            remasking='low_confidence'
-        )
-        first_correct_steps.append(first_correct_step)
+    # Initialize manual_settings
+    manual_settings = {}
+    
+    # Greedy search: optimize each position one by one
+    for position in range(16):  # Search positions 0 through 15
+        print(f"\n=== Optimizing position {position} ===")
+        best_value = None
+        best_step = float('inf')
         
-        # Track optimal block sizes for minimum step
-        if first_correct_step < min_step:
-            min_step = first_correct_step
-            optimal_block_sizes = block_sizes.copy()
+        for sweep_value in range(1, 33):  # Try values 1-32
+            current_settings = manual_settings.copy()
+            current_settings[position] = sweep_value
+            
+            block_sizes = calculate_block_sizes(
+                gen_length=32, 
+                base_block_length=2, 
+                manual_settings=current_settings,
+            )
+            print(f"Testing position {position} = {sweep_value}, block_sizes = {block_sizes}")
+            
+            out, first_correct_step = generate_custom(
+                model, 
+                tokenizer, # charles added
+                input_ids, 
+                steps=16, 
+                gen_length=32, 
+                block_sizes=block_sizes, 
+                temperature=0., 
+                cfg_scale=0., 
+                remasking='low_confidence'
+            )
+            first_correct_steps.append(first_correct_step)
+            
+            # Track best value for current position
+            if first_correct_step < best_step:
+                best_step = first_correct_step
+                best_value = sweep_value
+                optimal_block_sizes = block_sizes.copy()
+        
+        # Update manual_settings with the best value found for this position
+        manual_settings[position] = best_value
+        print(f"Best value for position {position}: {best_value} (step: {best_step})")
+        print(f"Updated manual_settings: {manual_settings}")
+        
+        # Update global minimum
+        if best_step < min_step:
+            min_step = best_step
     
     # Print the list of first_correct_steps and find the minimum
     print(f"\nFirst correct steps: {first_correct_steps}")
