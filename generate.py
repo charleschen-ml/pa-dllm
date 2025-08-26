@@ -144,6 +144,189 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
     return x
 
 
+@ torch.no_grad()
+def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_sizes=None, temperature=0.,
+                   cfg_scale=0., remasking='low_confidence', mask_id=126336):
+    '''
+    Args:
+        model: Mask predictor.
+        tokenizer: Tokenizer for decoding.
+        prompt: A tensor of shape (1, L).
+        steps: Sampling steps, less than or equal to gen_length.
+        gen_length: Generated answer length.
+        block_sizes: List of block sizes. If None, uses uniform blocks of size gen_length.
+        temperature: Categorical distribution sampling temperature.
+        cfg_scale: Unsupervised classifier-free guidance scale.
+        remasking: Remasking strategy. 'low_confidence' or 'random'.
+        mask_id: The toke id of [MASK] is 126336.
+    '''
+    # debug
+    print("\nstart generate_custom:\n")
+
+    # Create x = prompt + completion 
+    x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(model.device)
+    x[:, :prompt.shape[1]] = prompt.clone() # initialize prompt, while leaving completion tokens as <mask>
+
+    prompt_index = (x != mask_id) # create boolean mask with prompt = T, completion = F
+                                # e.g. [T, T, T, ..., F, F, F, ...]
+                                # used later if cfg enabled
+
+    # Handle block sizes
+    if block_sizes is None:
+        # Default: single block of size gen_length
+        block_sizes = [gen_length]
+    
+    # Validate block sizes
+    total_block_size = sum(block_sizes)
+    if total_block_size != gen_length:
+        raise ValueError(f"Sum of block_sizes ({total_block_size}) must equal gen_length ({gen_length})")
+    
+    num_blocks = len(block_sizes)
+    
+    # Calculate steps per block (assume uniform distribution)
+    assert steps % num_blocks == 0
+    steps_per_block = steps // num_blocks
+
+    first_correct_step = None  # Track first step with correct answer
+    # Calculate cumulative block positions
+    block_starts = [0] + [sum(block_sizes[:i]) for i in range(1, len(block_sizes))]
+    
+    for num_block in range(num_blocks):
+        block_size = block_sizes[num_block]
+        block_start = block_starts[num_block]
+        block_end = block_start + block_size
+
+        print(f"Starting block {num_block+1}/{num_blocks} (size: {block_size})")
+
+        # initialize boolean mask to all <mask> in current block
+        block_mask_index = (x[:, prompt.shape[1] + block_start: prompt.shape[1] + block_end] == mask_id)
+
+        # calculate number of tokens to unmask at each step
+        num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps_per_block)
+
+        for i in range(steps_per_block):
+            total_step = num_block * steps_per_block + i + 1 # total steps as efficiency metric
+            
+            mask_index = (x == mask_id) # update the boolean mask (since last step)
+            if cfg_scale > 0.:
+                un_x = x.clone()
+                un_x[prompt_index] = mask_id
+                x_ = torch.cat([x, un_x], dim=0)
+                logits = model(x_).logits
+                logits, un_logits = torch.chunk(logits, 2, dim=0)
+                logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+            else:
+                logits = model(x).logits # get logits with current x
+
+            logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
+            x0 = torch.argmax(logits_with_noise, dim=-1) # get index of token with highest logit at each position
+
+            if remasking == 'low_confidence':
+                p = F.softmax(logits, dim=-1) # convert logits to probs
+                
+                # extract prob at each position with highest logit
+                x0_p = torch.squeeze( 
+                    torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+            elif remasking == 'random':
+                x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+            else:
+                raise NotImplementedError(remasking)
+
+            # mask out tokens beyond the current block
+            x0_p[:, prompt.shape[1] + block_end:] = -np.inf
+
+            # torch.where(mask, tensor_A, tensor_B): if mask_index is True, use tensor A, otherwise use tensor B
+            # if token is true (masked), use x0 (token index with highest logit)
+            # otherwise use x (original token)
+            x0 = torch.where(mask_index, x0, x)
+            confidence = torch.where(mask_index, x0_p, -np.inf)
+
+            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+            for j in range(confidence.shape[0]): # loop through each batch
+                # torch.topk(input, k): selects the top k tokens from "input" (list)
+                # returns (values, indices)
+                _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
+                
+                # use "advanced indexing" to set all indices in select_index
+                # equivalent to saying:
+                # for index in select_index:
+                #   transfer_index[j, index] = True
+                transfer_index[j, select_index] = True
+
+            # unmask (freeze) the tokens in x (also using advanced indexing)
+            x[transfer_index] = x0[transfer_index]
+
+            # check answer correct
+            out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
+            print("\n" + out_text)
+            is_correct = extract_boxed(out_text) == 72
+            if is_correct and first_correct_step is None:
+                first_correct_step = total_step
+            print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
+
+    print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else 'Never'}")
+    return x
+
+
+def calculate_block_sizes(gen_length, base_block_length, sweep_position, sweep_value):
+    '''
+    Calculate block sizes for sweeping experiments.
+    
+    Args:
+        gen_length: Total generation length
+        base_block_length: Base block length (e.g., 2)
+        sweep_position: Which block to sweep (0-indexed)
+        sweep_value: Value to set at sweep position
+    
+    Returns:
+        List of block sizes that sum to gen_length
+        
+    Example:
+        calculate_block_sizes(32, 2, 0, 8) -> [8, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+        calculate_block_sizes(32, 2, 1, 8) -> [2, 8, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+    '''
+    # Calculate how many base blocks we need
+    num_base_blocks = gen_length // base_block_length
+    
+    # Create list of base block sizes
+    block_sizes = [base_block_length] * num_base_blocks
+    
+    # Validate sweep position
+    if sweep_position >= len(block_sizes):
+        raise ValueError(f"sweep_position ({sweep_position}) must be less than number of blocks ({len(block_sizes)})")
+    
+    # Calculate the adjustment needed
+    adjustment = sweep_value - base_block_length
+    
+    # Check if adjustment is possible
+    if adjustment > 0:
+        # Need to reduce other blocks to accommodate larger sweep block
+        remaining_blocks = len(block_sizes) - 1
+        if adjustment > remaining_blocks * base_block_length:
+            raise ValueError(f"sweep_value ({sweep_value}) too large for gen_length ({gen_length})")
+        
+        # Reduce other blocks by 1 each from the end until we have enough space
+        blocks_to_reduce = adjustment
+        for j in range(len(block_sizes) - 1, -1, -1):  # Iterate from end to beginning
+            if j != sweep_position and blocks_to_reduce > 0:
+                if block_sizes[j] > 1:
+                    block_sizes[j] -= 1
+                    blocks_to_reduce -= 1
+        
+        if blocks_to_reduce > 0:
+            raise ValueError(f"Cannot accommodate sweep_value ({sweep_value}) with given parameters")
+    
+    # Set the sweep position
+    block_sizes[sweep_position] = sweep_value
+    
+    # Validate total
+    total = sum(block_sizes)
+    if total != gen_length:
+        raise ValueError(f"Calculated block sizes sum to {total}, expected {gen_length}")
+    
+    return block_sizes
+
+
 def main():
     device = 'cuda'
 
