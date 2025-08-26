@@ -150,22 +150,23 @@ def extract_boxed(text):
     match = re.search(r'\\boxed{(\d+)}', text)
     return int(match.group(1)) if match else None
 
-def calculate_block_sizes(gen_length, base_block_length, sweep_position, sweep_value):
+def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sweep_value=None, manual_settings=None):
     '''
     Calculate block sizes for sweeping experiments.
     
     Args:
         gen_length: Total generation length
         base_block_length: Base block length (e.g., 2)
-        sweep_position: Which block to sweep (0-indexed)
-        sweep_value: Value to set at sweep position
+        sweep_position: Which block to sweep (0-indexed) - for backward compatibility
+        sweep_value: Value to set at sweep position - for backward compatibility
+        manual_settings: Dict of {position: value} for manual settings (e.g., {0: 4, 1: 6})
     
     Returns:
         List of block sizes that sum to gen_length
         
     Example:
         calculate_block_sizes(32, 2, 0, 8) -> [8, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
-        calculate_block_sizes(32, 2, 1, 8) -> [2, 8, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+        calculate_block_sizes(32, 2, manual_settings={0: 4, 1: 6}) -> [4, 6, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
     '''
     # Calculate how many base blocks we need
     num_base_blocks = gen_length // base_block_length
@@ -173,36 +174,77 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position, sweep_v
     # Create list of base block sizes
     block_sizes = [base_block_length] * num_base_blocks
     
-    # Validate sweep position
-    if sweep_position >= len(block_sizes):
-        raise ValueError(f"sweep_position ({sweep_position}) must be less than number of blocks ({len(block_sizes)})")
-    
-    # Calculate the adjustment needed
-    adjustment = sweep_value - base_block_length
-    
-    # Check if adjustment is possible
-    if adjustment > 0:
-        # Need to reduce other blocks to accommodate larger sweep block
-        remaining_blocks = len(block_sizes) - 1
-        if adjustment > remaining_blocks * base_block_length:
-            raise ValueError(f"sweep_value ({sweep_value}) too large for gen_length ({gen_length})")
+    # Handle manual settings
+    if manual_settings is not None:
+        # Convert old sweep parameters to manual_settings for backward compatibility
+        if sweep_position is not None and sweep_value is not None:
+            manual_settings = {sweep_position: sweep_value}
         
-        # Reduce blocks from the end: last block goes to 0 first, then second-to-last to 1, etc.
-        blocks_to_reduce = adjustment
-        j = len(block_sizes) - 1  # Start from last block
-        while blocks_to_reduce > 0 and j >= 0:
-            if j != sweep_position:
-                # Reduce this block completely before moving to the next
-                reduction = min(blocks_to_reduce, block_sizes[j])
-                block_sizes[j] -= reduction
-                blocks_to_reduce -= reduction
-            j -= 1
+        # Validate all positions
+        for pos in manual_settings.keys():
+            if pos >= len(block_sizes):
+                raise ValueError(f"Position {pos} must be less than number of blocks ({len(block_sizes)})")
         
-        if blocks_to_reduce > 0:
-            raise ValueError(f"Cannot accommodate sweep_value ({sweep_value}) with given parameters")
+        # Calculate total adjustment needed
+        total_adjustment = sum(value - base_block_length for value in manual_settings.values())
+        
+        # Check if adjustment is possible
+        if total_adjustment > 0:
+            # Need to reduce other blocks to accommodate larger manual blocks
+            remaining_blocks = len(block_sizes) - len(manual_settings)
+            if total_adjustment > remaining_blocks * base_block_length:
+                raise ValueError(f"Manual settings too large for gen_length ({gen_length})")
+            
+            # Reduce blocks from the end: last block goes to 0 first, then second-to-last to 1, etc.
+            blocks_to_reduce = total_adjustment
+            j = len(block_sizes) - 1  # Start from last block
+            while blocks_to_reduce > 0 and j >= 0:
+                if j not in manual_settings:
+                    # Reduce this block completely before moving to the next
+                    reduction = min(blocks_to_reduce, block_sizes[j])
+                    block_sizes[j] -= reduction
+                    blocks_to_reduce -= reduction
+                j -= 1
+            
+            if blocks_to_reduce > 0:
+                raise ValueError(f"Cannot accommodate manual settings with given parameters")
+        
+        # Set all manual positions
+        for pos, value in manual_settings.items():
+            block_sizes[pos] = value
     
-    # Set the sweep position
-    block_sizes[sweep_position] = sweep_value
+    # Handle backward compatibility for old sweep parameters
+    elif sweep_position is not None and sweep_value is not None:
+        # Validate sweep position
+        if sweep_position >= len(block_sizes):
+            raise ValueError(f"sweep_position ({sweep_position}) must be less than number of blocks ({len(block_sizes)})")
+        
+        # Calculate the adjustment needed
+        adjustment = sweep_value - base_block_length
+        
+        # Check if adjustment is possible
+        if adjustment > 0:
+            # Need to reduce other blocks to accommodate larger sweep block
+            remaining_blocks = len(block_sizes) - 1
+            if adjustment > remaining_blocks * base_block_length:
+                raise ValueError(f"sweep_value ({sweep_value}) too large for gen_length ({gen_length})")
+            
+            # Reduce blocks from the end: last block goes to 0 first, then second-to-last to 1, etc.
+            blocks_to_reduce = adjustment
+            j = len(block_sizes) - 1  # Start from last block
+            while blocks_to_reduce > 0 and j >= 0:
+                if j != sweep_position:
+                    # Reduce this block completely before moving to the next
+                    reduction = min(blocks_to_reduce, block_sizes[j])
+                    block_sizes[j] -= reduction
+                    blocks_to_reduce -= reduction
+                j -= 1
+            
+            if blocks_to_reduce > 0:
+                raise ValueError(f"Cannot accommodate sweep_value ({sweep_value}) with given parameters")
+        
+        # Set the sweep position
+        block_sizes[sweep_position] = sweep_value
     
     # Validate total
     total = sum(block_sizes)
