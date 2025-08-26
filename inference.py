@@ -299,8 +299,9 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
         gen_length=32, 
         base_block_length=2, 
         sweep_position=0, 
-        sweep_value=2
+        sweep_value=3
     )
+    print(f"block_sizes = {block_sizes}\n")
     out = generate_custom(
         model, 
         tokenizer, # charles added
