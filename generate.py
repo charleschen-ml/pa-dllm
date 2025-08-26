@@ -132,7 +132,7 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
             x[transfer_index] = x0[transfer_index]
 
             # check answer correct
-            out_text = tokenizer.batch_decode(x[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+            out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
             print("\n" + out_text)
             print(f"Answer correct? {extract_boxed(out_text) == 72} | step: {total_step}")
 
