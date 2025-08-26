@@ -245,9 +245,10 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
         remasking='low_confidence'
     )
 
-    print("\n" + tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
+    out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+    print("\n" + out_text)
 
-    print(f"Answer correct? {extract_boxed(pred) == 72}")
+    print(f"Answer correct? {extract_boxed(out_text) == 72}")
 
     # debug
     # outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
