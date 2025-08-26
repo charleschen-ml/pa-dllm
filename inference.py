@@ -62,18 +62,18 @@ class InferenceArguments:
         self.inf_bit_config = inf_bit_config
         self.default_bit = default_bit
 
-# Score squad metrics (EM, F1) after inference
-def score_squad(predictions, references):
-    for i in range(min(len(predictions), 2)): # print at most 2 samples
-        print(f"prediction {i} = {predictions[i]['prediction_text']}")
-        print(f"reference {i} = {references[i]['answers']['text']}")
-    metric = evaluate.load("squad")
-    results = metric.compute(predictions=predictions, references=references)
+# # Score squad metrics (EM, F1) after inference
+# def score_squad(predictions, references):
+#     for i in range(min(len(predictions), 2)): # print at most 2 samples
+#         print(f"prediction {i} = {predictions[i]['prediction_text']}")
+#         print(f"reference {i} = {references[i]['answers']['text']}")
+#     metric = evaluate.load("squad")
+#     results = metric.compute(predictions=predictions, references=references)
 
-    num_correct = int(results["exact_match"] * len(predictions) / 100)
-    print(f"Exact Match: {results['exact_match']:.2f} ({num_correct}/{len(predictions)})")
-    print(f"F1 Score: {results['f1']:.2f}")
-    return results
+#     num_correct = int(results["exact_match"] * len(predictions) / 100)
+#     print(f"Exact Match: {results['exact_match']:.2f} ({num_correct}/{len(predictions)})")
+#     print(f"F1 Score: {results['f1']:.2f}")
+#     return results
 
 # Save inference outputs to csv
 def save_predictions_to_csv(predictions, references, output_csv_path):
@@ -145,6 +145,10 @@ def make_parser(subparsers: argparse._SubParsersAction = None):
                        help="Default bit for all layers")
     return parser
 
+def extract_boxed(text):
+    match = re.search(r'\\boxed{(\d+)}', text)
+    return int(match.group(1)) if match else None
+
 # -----------------------------
 # 1) Load once, reuse everywhere
 # -----------------------------
@@ -203,13 +207,10 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     # Add special tokens for the Instruct model (not required for base model)
     m = [{"role": "user", "content": prompt}, ]
     prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-    print(f"prompt=\n{prompt}")
 
     input_ids = tokenizer(prompt)['input_ids']
-    print(f"input_ids=\n{input_ids}")
 
     input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
-    print(f"input_ids=\n{input_ids}")
 
     # debug
     inputs_decoded = tokenizer.decode(input_ids[0], skip_special_tokens=True)
@@ -245,6 +246,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     )
 
     print("\n" + tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
+
+    print(f"Answer correct? {extract_boxed(pred) == 72}")
 
     # debug
     # outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
