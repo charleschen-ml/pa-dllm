@@ -296,7 +296,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
 
     # custom generate with block size as list
     first_correct_steps = []
-    for sweep_value in range(2:4):
+    for sweep_value in range(2, 4):
         block_sizes = calculate_block_sizes(
             gen_length=32, 
             base_block_length=2, 
