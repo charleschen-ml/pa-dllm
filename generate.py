@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from transformers import AutoTokenizer, AutoModel
-
+from inference import extract_boxed
 
 def add_gumbel_noise(logits, temperature):
     '''
