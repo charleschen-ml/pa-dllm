@@ -42,7 +42,7 @@ def get_num_transfer_tokens(mask_index, steps):
 
 
 @ torch.no_grad()
-def generate(model, prompt, steps=128, gen_length=128, block_length=128, temperature=0.,
+def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=128, temperature=0.,
              cfg_scale=0., remasking='low_confidence', mask_id=126336):
     '''
     Args:
@@ -56,8 +56,6 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
         remasking: Remasking strategy. 'low_confidence' or 'random'.
         mask_id: The toke id of [MASK] is 126336.
     '''
-    # debug
-    print("\nstart generate:\n")
 
     # Create x = prompt + completion 
     x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(model.device)
@@ -71,10 +69,7 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
     num_blocks = gen_length // block_length
 
     assert steps % num_blocks == 0
-    steps = steps // num_blocks # total_steps -> steps_per_block
-
-    # debug
-    print("\nstart denoise loop:\n")
+    steps = steps // num_blocks # convert total_steps to steps_per_block
 
     for num_block in tqdm(range(num_blocks), desc="Processing blocks"):
 
@@ -85,6 +80,7 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
         num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
 
         for i in range(steps):
+            total_step = num_block * steps + i + 1 # total steps as efficiency metric
             
             mask_index = (x == mask_id) # update the boolean mask (since last step)
             if cfg_scale > 0.:
@@ -134,6 +130,11 @@ def generate(model, prompt, steps=128, gen_length=128, block_length=128, tempera
 
             # unmask (freeze) the tokens in x (also using advanced indexing)
             x[transfer_index] = x0[transfer_index]
+
+            # check answer correct
+            out_text = tokenizer.batch_decode(x[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+            print("\n" + out_text)
+            print(f"Answer correct? {extract_boxed(out_text) == 72} | step: {total_step}")
 
     return x
 

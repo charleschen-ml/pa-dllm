@@ -237,6 +237,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
 
     out = generate(
         model, 
+        tokenizer, # charles added
         input_ids, 
         steps=8, 
         gen_length=32, 
@@ -248,7 +249,6 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
 
     out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
     print("\n" + out_text)
-
     print(f"Answer correct? {extract_boxed(out_text) == 72}")
 
     # debug
