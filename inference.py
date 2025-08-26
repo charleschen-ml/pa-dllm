@@ -341,7 +341,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     optimal_block_sizes = None
     min_step = float('inf')
     
-    for sweep_value in range(2, 9):
+    for sweep_value in range(2, 8):
         manual_settings = {0: 23, 1: 2, 2: sweep_value}
         block_sizes = calculate_block_sizes(
             gen_length=32, 
