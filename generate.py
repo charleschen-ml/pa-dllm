@@ -327,6 +327,9 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position, sweep_v
     if total != gen_length:
         raise ValueError(f"Calculated block sizes sum to {total}, expected {gen_length}")
     
+    # Remove zero elements
+    block_sizes = [size for size in block_sizes if size > 0]
+    
     return block_sizes
 
 
