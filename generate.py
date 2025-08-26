@@ -71,6 +71,7 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
     assert steps % num_blocks == 0
     steps = steps // num_blocks # convert total_steps to steps_per_block
 
+    first_correct_step = None  # Track first step with correct answer
     for num_block in range(num_blocks):
 
         # initialize boolean mask to all <mask> in current block
@@ -134,8 +135,12 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
             # check answer correct
             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
             print("\n" + out_text)
-            print("✅" if extract_boxed(out_text) == 72 else "❌" + f" | step: {total_step}")
+            is_correct = extract_boxed(out_text) == 72
+            if is_correct and first_correct_step is None:
+                first_correct_step = total_step
+            print("✅" if is_correct else "❌" + f" | step: {total_step}")
 
+    print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else 'Never'}")
     return x
 
 
