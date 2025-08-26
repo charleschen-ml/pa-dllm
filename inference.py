@@ -34,7 +34,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "t
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8" # To fix torch deterministic error
 torch.use_deterministic_algorithms(True)
 
-from generate import generate # generate.py from llada github
+from generate import generate, generate_custom # generate.py from llada github
 from transformers import AutoTokenizer, AutoModel
 
 # Custom arguments for inference-specific parameters
