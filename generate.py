@@ -134,8 +134,7 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
             # check answer correct
             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
             print("\n" + out_text)
-            print(f"Answer correct? {extract_boxed(out_text) == 72} | step: {total_step}")
-            print("✅" if extract_boxed(out_text) == 72 else "❌")
+            print("✅" if extract_boxed(out_text) == 72 else "❌" + f" | step: {total_step}")
 
     return x
 
