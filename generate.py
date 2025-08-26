@@ -263,11 +263,11 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
 
             # check answer correct
             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
-            print("\n" + out_text)
+            # print("\n" + out_text)
             is_correct = extract_boxed(out_text) == 72
             if is_correct and first_correct_step is None:
                 first_correct_step = total_step
-            print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
+            # print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
 
     print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")
     return x, first_correct_step if first_correct_step is not None else float('inf')
