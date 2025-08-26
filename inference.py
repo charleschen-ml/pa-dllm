@@ -301,7 +301,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
             gen_length=32, 
             base_block_length=2, 
             sweep_position=0, 
-            sweep_value=3
+            sweep_value=sweep_value
         )
         print(f"block_sizes = {block_sizes}\n")
         out, first_correct_step = generate_custom(
@@ -322,9 +322,9 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     min_step = min(first_correct_steps)
     print(f"Minimum first correct step: {min_step}")
 
-    out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
-    print("\n" + out_text)
-    print(f"Answer correct? {extract_boxed(out_text) == 72}")
+    # out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+    # print("\n" + out_text)
+    # print(f"Answer correct? {extract_boxed(out_text) == 72}")
 
     # debug
     # outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
