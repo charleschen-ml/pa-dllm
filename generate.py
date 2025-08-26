@@ -161,7 +161,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
         mask_id: The toke id of [MASK] is 126336.
     '''
     # debug
-    print("\nstart generate_custom:\n")
+    # print("\nstart generate_custom:\n")
 
     # Create x = prompt + completion 
     x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(model.device)
