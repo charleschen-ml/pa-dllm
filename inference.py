@@ -349,6 +349,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     # custom generate with block size as list
     first_correct_steps = []
     optimal_block_sizes = None
+    optimal_output_text = None
     min_step = float('inf')
     
     # Initialize manual_settings
@@ -394,6 +395,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
                 best_step = first_correct_step
                 best_value = sweep_value
                 optimal_block_sizes = block_sizes.copy()
+                # Store the output text for the best configuration
+                optimal_output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
         
         # Update manual_settings with the best value found for this position
         if best_value is not None:
@@ -410,6 +413,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     print(f"\nFirst correct steps: {first_correct_steps}")
     print(f"Minimum first correct step: {min_step}")
     print(f"Optimal block sizes: {optimal_block_sizes}")
+    print(f"\nOptimal output text:")
+    print(optimal_output_text)
 
     # out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
     # print("\n" + out_text)
