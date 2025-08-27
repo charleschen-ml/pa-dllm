@@ -1,10 +1,14 @@
 import torch
 import numpy as np
 import torch.nn.functional as F
+import re
 from tqdm import tqdm
 
 from transformers import AutoTokenizer, AutoModel
-from inference import extract_boxed
+
+def extract_boxed(text):
+    match = re.search(r'\\boxed{(\d+)}', text)
+    return int(match.group(1)) if match else None
 
 def add_gumbel_noise(logits, temperature):
     '''

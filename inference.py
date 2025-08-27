@@ -34,7 +34,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "t
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8" # To fix torch deterministic error
 torch.use_deterministic_algorithms(True)
 
-from generate import generate, generate_custom # generate.py from llada github
+from generate import generate, generate_custom, extract_boxed # generate.py from llada github
 from transformers import AutoTokenizer, AutoModel
 
 # Custom arguments for inference-specific parameters
@@ -146,9 +146,7 @@ def make_parser(subparsers: argparse._SubParsersAction = None):
                        help="Default bit for all layers")
     return parser
 
-def extract_boxed(text):
-    match = re.search(r'\\boxed{(\d+)}', text)
-    return int(match.group(1)) if match else None
+
 
 def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sweep_value=None, manual_settings=None):
     '''
