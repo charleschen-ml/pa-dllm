@@ -390,6 +390,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
             )
             first_correct_steps.append(first_correct_step)
             
+
+            
             # Track best value for current position
             if first_correct_step < best_step:
                 best_step = first_correct_step
@@ -415,6 +417,45 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     print(f"Optimal block sizes: {optimal_block_sizes}")
     print(f"\nOptimal output text:")
     print(optimal_output_text)
+    
+    # Show block-by-block breakdown of the optimal configuration
+    if optimal_block_sizes is not None:
+        print(f"\nBlock-by-block breakdown:")
+        # Generate the optimal configuration one more time to get the block breakdown
+        optimal_settings = {}
+        for i, size in enumerate(optimal_block_sizes):
+            if size > 0:
+                optimal_settings[i] = size
+        
+        final_block_sizes = calculate_block_sizes(
+            gen_length=gen_length, 
+            base_block_length=base_block_length, 
+            manual_settings=optimal_settings,
+        )
+        
+        if final_block_sizes is not None:
+            out, _ = generate_custom(
+                model, 
+                tokenizer,
+                input_ids, 
+                steps=steps, 
+                gen_length=gen_length, 
+                block_sizes=final_block_sizes, 
+                temperature=0., 
+                cfg_scale=0., 
+                remasking='low_confidence'
+            )
+            
+            block_starts = [0] + [sum(final_block_sizes[:i]) for i in range(1, len(final_block_sizes))]
+            for i, block_size in enumerate(final_block_sizes):
+                if block_size > 0:
+                    block_start = block_starts[i]
+                    block_end = block_start + block_size
+                    block_tokens = out[0, input_ids.shape[1] + block_start:input_ids.shape[1] + block_end]
+                    block_text = tokenizer.decode(block_tokens, skip_special_tokens=True)
+                    print(f"{block_size}: {block_text}")
+                else:
+                    print(f"{block_size}: (skipped)")
 
     # out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
     # print("\n" + out_text)
