@@ -138,19 +138,19 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
             
             # Store confidence for this block if this is the last step of the block
             if i == steps_per_block - 1:  # Last step of this block
-                print(f"DEBUG: Last step of block {num_block}, capturing confidence for size {block_size}")
+
                 block_confidence = []
                 for j in range(block_size):
                     token_pos = prompt.shape[1] + block_start + j
                     if token_pos < confidence.shape[1]:
                         conf_val = confidence[0, token_pos].item()
-                        print(f"DEBUG: Token {j}, pos {token_pos}, conf_val = {conf_val:.2f}")
+
                         if conf_val != -np.inf:  # Only include non-masked tokens
                             block_confidence.append(conf_val)
-                print(f"DEBUG: Block {num_block} confidences: {block_confidence}")
+
                 if block_confidence:
                     block_confidences[num_block] = block_confidence
-                    print(f"DEBUG: Stored confidences for block {num_block}: {block_confidences[num_block]}")
+
 
             # check answer correct
             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
@@ -209,7 +209,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
 
     first_correct_step = None  # Track first step with correct answer
     block_confidences = {}  # Track confidence for each block
-    print(f"DEBUG: Starting generate_custom with {num_blocks} blocks")
+
     # Calculate cumulative block positions
     block_starts = [0] + [sum(block_sizes[:i]) for i in range(1, len(block_sizes))]
     
@@ -218,11 +218,8 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
         block_start = block_starts[num_block]
         block_end = block_start + block_size
 
-        print(f"DEBUG: Processing block {num_block}, size {block_size}, steps_per_block = {steps_per_block}")
-
         # Skip blocks with zero size
         if block_size == 0:
-            print(f"DEBUG: Skipping block {num_block} (size: 0)")
             continue
 
         # initialize boolean mask to all <mask> in current block
@@ -233,7 +230,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
 
         for i in range(steps_per_block):
             total_step = num_block * steps_per_block + i + 1 # total steps as efficiency metric
-            print(f"DEBUG: Block {num_block}, step {i+1}/{steps_per_block}, total_step = {total_step}")
+
             
             mask_index = (x == mask_id) # update the boolean mask (since last step)
             if cfg_scale > 0.:
@@ -286,19 +283,19 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             
             # Store confidence for this block if this is the last step of the block
             if i == steps_per_block - 1:  # Last step of this block
-                print(f"DEBUG: Last step of block {num_block}, capturing confidence for size {block_size}")
+
                 block_confidence = []
                 for j in range(block_size):
                     token_pos = prompt.shape[1] + block_start + j
                     if token_pos < confidence.shape[1]:
                         conf_val = confidence[0, token_pos].item()
-                        print(f"DEBUG: Token {j}, pos {token_pos}, conf_val = {conf_val:.2f}")
+
                         if conf_val != -np.inf:  # Only include non-masked tokens
                             block_confidence.append(conf_val)
-                print(f"DEBUG: Block {num_block} confidences: {block_confidence}")
+
                 if block_confidence:
                     block_confidences[num_block] = block_confidence
-                    print(f"DEBUG: Stored confidences for block {num_block}: {block_confidences[num_block]}")
+
 
             # check answer correct
             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
@@ -309,7 +306,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             # print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
 
     print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")
-    print(f"DEBUG: Returning block_confidences: {block_confidences}")
+
     return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences
 
 def main():

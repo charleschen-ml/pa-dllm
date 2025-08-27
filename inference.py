@@ -457,15 +457,12 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
                     block_text = tokenizer.decode(block_tokens, skip_special_tokens=True)
                     
                     # Get confidence information for this block
-                    print(f"DEBUG: Checking confidences for block {i}, final_confidences = {final_confidences}")
                     if final_confidences and i in final_confidences:
                         confidences = final_confidences[i]
                         conf_str = " ".join([f"{c:.2f}" for c in confidences])
                         mean_conf = sum(confidences) / len(confidences)
-                        print(f"DEBUG: Found confidences for block {i}: {confidences}")
                         print(f"{block_size}: {block_text} [{conf_str}] mean = {mean_conf:.2f}")
                     else:
-                        print(f"DEBUG: No confidences found for block {i}")
                         print(f"{block_size}: {block_text}")
                 else:
                     print(f"{block_size}: (skipped)")
