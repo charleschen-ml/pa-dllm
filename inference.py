@@ -247,6 +247,9 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
     # Validate total
     total = sum(block_sizes)
     if total != gen_length:
+        print(f"DEBUG: block_sizes = {block_sizes}")
+        print(f"DEBUG: manual_settings = {manual_settings}")
+        print(f"DEBUG: total = {total}, gen_length = {gen_length}")
         raise ValueError(f"Calculated block sizes sum to {total}, expected {gen_length}")
     
     # Keep zero elements to maintain consistent number of blocks
