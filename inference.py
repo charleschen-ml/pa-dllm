@@ -461,7 +461,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
                         confidences = final_confidences[i]
                         conf_str = " ".join([f"{c:.2f}" for c in confidences])
                         mean_conf = sum(confidences) / len(confidences)
-                        print(f"{block_size}: {block_text} [{conf_str}] mean = {mean_conf:.2f}")
+                        print(f"{block_size}: {block_text} confidence:[{conf_str}] mean: {mean_conf:.2f}")
                     else:
                         print(f"{block_size}: {block_text}")
                 else:
