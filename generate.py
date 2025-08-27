@@ -138,7 +138,7 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
             
             # Store confidence for this block if this is the last step of the block
             if i == steps_per_block - 1:  # Last step of this block
-                print(f"DEBUG: Capturing confidence for block {num_block}, size {block_size}")
+                print(f"DEBUG: Last step of block {num_block}, capturing confidence for size {block_size}")
                 block_confidence = []
                 for j in range(block_size):
                     token_pos = prompt.shape[1] + block_start + j
@@ -209,6 +209,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
 
     first_correct_step = None  # Track first step with correct answer
     block_confidences = {}  # Track confidence for each block
+    print(f"DEBUG: Starting generate_custom with {num_blocks} blocks")
     # Calculate cumulative block positions
     block_starts = [0] + [sum(block_sizes[:i]) for i in range(1, len(block_sizes))]
     
