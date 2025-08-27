@@ -135,6 +135,18 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
 
             # unmask (freeze) the tokens in x (also using advanced indexing)
             x[transfer_index] = x0[transfer_index]
+            
+            # Store confidence for this block if this is the last step of the block
+            if i == steps_per_block - 1:  # Last step of this block
+                block_confidence = []
+                for j in range(block_size):
+                    token_pos = prompt.shape[1] + block_start + j
+                    if token_pos < confidence.shape[1]:
+                        conf_val = confidence[0, token_pos].item()
+                        if conf_val != -np.inf:  # Only include non-masked tokens
+                            block_confidence.append(conf_val)
+                if block_confidence:
+                    block_confidences[num_block] = block_confidence
 
             # check answer correct
             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
@@ -192,6 +204,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     steps_per_block = steps // num_blocks
 
     first_correct_step = None  # Track first step with correct answer
+    block_confidences = {}  # Track confidence for each block
     # Calculate cumulative block positions
     block_starts = [0] + [sum(block_sizes[:i]) for i in range(1, len(block_sizes))]
     
@@ -274,7 +287,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             # print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
 
     print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")
-    return x, first_correct_step if first_correct_step is not None else float('inf')
+    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences
 
 def main():
     device = 'cuda'

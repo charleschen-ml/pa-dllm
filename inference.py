@@ -350,6 +350,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     first_correct_steps = []
     optimal_block_sizes = None
     optimal_output_text = None
+    optimal_block_confidences = None
     min_step = float('inf')
     
     # Initialize manual_settings
@@ -377,7 +378,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
                 
             print(f"Testing position {position} = {sweep_value}")
             
-            out, first_correct_step = generate_custom(
+            out, first_correct_step, block_confidences = generate_custom(
                 model, 
                 tokenizer, # charles added
                 input_ids, 
@@ -397,8 +398,9 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
                 best_step = first_correct_step
                 best_value = sweep_value
                 optimal_block_sizes = block_sizes.copy()
-                # Store the output text for the best configuration
+                # Store the output text and confidences for the best configuration
                 optimal_output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+                optimal_block_confidences = block_confidences.copy()
         
         # Update manual_settings with the best value found for this position
         if best_value is not None:
@@ -434,7 +436,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
         )
         
         if final_block_sizes is not None:
-            out, _ = generate_custom(
+            out, _, final_confidences = generate_custom(
                 model, 
                 tokenizer,
                 input_ids, 
@@ -453,7 +455,15 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
                     block_end = block_start + block_size
                     block_tokens = out[0, input_ids.shape[1] + block_start:input_ids.shape[1] + block_end]
                     block_text = tokenizer.decode(block_tokens, skip_special_tokens=True)
-                    print(f"{block_size}: {block_text}")
+                    
+                    # Get confidence information for this block
+                    if final_confidences and i in final_confidences:
+                        confidences = final_confidences[i]
+                        conf_str = " ".join([f"{c:.2f}" for c in confidences])
+                        mean_conf = sum(confidences) / len(confidences)
+                        print(f"{block_size}: {block_text} [{conf_str}] mean = {mean_conf:.2f}")
+                    else:
+                        print(f"{block_size}: {block_text}")
                 else:
                     print(f"{block_size}: (skipped)")
 
