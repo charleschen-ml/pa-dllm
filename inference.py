@@ -319,8 +319,6 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     """
 
-    prompt = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?"
-    # prompt = "Who are you?"
     print(f"prompt=\n{prompt}")
 
     # Add special tokens for the Instruct model (not required for base model)
