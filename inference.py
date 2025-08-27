@@ -183,17 +183,18 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
             if pos >= len(block_sizes):
                 raise ValueError(f"Position {pos} must be less than number of blocks ({len(block_sizes)})")
         
-        # Set all manual positions FIRST
+        # Set all manual positions FIRST (skip None values)
         for pos, value in manual_settings.items():
-            block_sizes[pos] = value
+            if value is not None:
+                block_sizes[pos] = value
         
-        # Calculate total adjustment needed
-        total_adjustment = sum(value - base_block_length for value in manual_settings.values())
+        # Calculate total adjustment needed (skip None values)
+        total_adjustment = sum(value - base_block_length for value in manual_settings.values() if value is not None)
         
         # Check if adjustment is possible
         if total_adjustment > 0:
             # Need to reduce other blocks to accommodate larger manual blocks
-            remaining_blocks = len(block_sizes) - len(manual_settings)
+            remaining_blocks = len(block_sizes) - len([v for v in manual_settings.values() if v is not None])
             max_reducible = remaining_blocks * base_block_length
             print(f"DEBUG: total_adjustment = {total_adjustment}, remaining_blocks = {remaining_blocks}, max_reducible = {max_reducible}")
             if total_adjustment > max_reducible:
@@ -207,7 +208,7 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
             blocks_to_reduce = total_adjustment
             j = len(block_sizes) - 1  # Start from last block
             while blocks_to_reduce > 0 and j >= 0:
-                if j not in manual_settings:
+                if j not in manual_settings or manual_settings[j] is None:
                     # Reduce this block completely before moving to the next
                     reduction = min(blocks_to_reduce, block_sizes[j])
                     block_sizes[j] -= reduction
@@ -222,7 +223,7 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
             blocks_to_add = -total_adjustment
             j = len(block_sizes) - 1  # Start from last block
             while blocks_to_add > 0 and j >= 0:
-                if j not in manual_settings:
+                if j not in manual_settings or manual_settings[j] is None:
                     # Add to this block
                     addition = min(blocks_to_add, gen_length - sum(block_sizes))
                     block_sizes[j] += addition
@@ -405,8 +406,11 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
                 optimal_block_sizes = block_sizes.copy()
         
         # Update manual_settings with the best value found for this position
-        manual_settings[position] = best_value
-        print(f"Best value for position {position}: {best_value} (step: {best_step})")
+        if best_value is not None:
+            manual_settings[position] = best_value
+            print(f"Best value for position {position}: {best_value} (step: {best_step})")
+        else:
+            print(f"No valid configuration found for position {position}")
         print(f"Updated manual_settings: {manual_settings}")
         
         # Update global minimum
