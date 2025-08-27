@@ -138,15 +138,19 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
             
             # Store confidence for this block if this is the last step of the block
             if i == steps_per_block - 1:  # Last step of this block
+                print(f"DEBUG: Capturing confidence for block {num_block}, size {block_size}")
                 block_confidence = []
                 for j in range(block_size):
                     token_pos = prompt.shape[1] + block_start + j
                     if token_pos < confidence.shape[1]:
                         conf_val = confidence[0, token_pos].item()
+                        print(f"DEBUG: Token {j}, pos {token_pos}, conf_val = {conf_val}")
                         if conf_val != -np.inf:  # Only include non-masked tokens
                             block_confidence.append(conf_val)
+                print(f"DEBUG: Block {num_block} confidences: {block_confidence}")
                 if block_confidence:
                     block_confidences[num_block] = block_confidence
+                    print(f"DEBUG: Stored confidences for block {num_block}: {block_confidences[num_block]}")
 
             # check answer correct
             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
@@ -287,6 +291,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             # print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
 
     print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")
+    print(f"DEBUG: Returning block_confidences: {block_confidences}")
     return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences
 
 def main():
