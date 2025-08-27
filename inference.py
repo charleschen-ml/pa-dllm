@@ -183,6 +183,10 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
             if pos >= len(block_sizes):
                 raise ValueError(f"Position {pos} must be less than number of blocks ({len(block_sizes)})")
         
+        # Set all manual positions FIRST
+        for pos, value in manual_settings.items():
+            block_sizes[pos] = value
+        
         # Calculate total adjustment needed
         total_adjustment = sum(value - base_block_length for value in manual_settings.values())
         
@@ -218,10 +222,6 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
                     block_sizes[j] += addition
                     blocks_to_add -= addition
                 j -= 1
-        
-        # Set all manual positions
-        for pos, value in manual_settings.items():
-            block_sizes[pos] = value
     
     # Handle backward compatibility for old sweep parameters
     elif sweep_position is not None and sweep_value is not None:
