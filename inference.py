@@ -196,12 +196,7 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
             # Need to reduce other blocks to accommodate larger manual blocks
             remaining_blocks = len(block_sizes) - len([v for v in manual_settings.values() if v is not None])
             max_reducible = remaining_blocks * base_block_length
-            print(f"DEBUG: total_adjustment = {total_adjustment}, remaining_blocks = {remaining_blocks}, max_reducible = {max_reducible}")
             if total_adjustment > max_reducible:
-                print(f"DEBUG: Manual settings too large! {total_adjustment} > {max_reducible}")
-                # Instead of raising error, cap the manual settings to what's possible
-                print(f"DEBUG: Capping manual settings to fit within constraints")
-                # This is a fallback - we'll handle this case by reducing the manual settings
                 return None  # Signal that this configuration is not possible
             
             # Reduce blocks from the end: last block goes to 0 first, then second-to-last to 1, etc.
@@ -266,9 +261,6 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
     # Validate total
     total = sum(block_sizes)
     if total != gen_length:
-        print(f"DEBUG: block_sizes = {block_sizes}")
-        print(f"DEBUG: manual_settings = {manual_settings}")
-        print(f"DEBUG: total = {total}, gen_length = {gen_length}")
         raise ValueError(f"Calculated block sizes sum to {total}, expected {gen_length}")
     
     # Keep zero elements to maintain consistent number of blocks
@@ -381,10 +373,9 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
             )
             
             if block_sizes is None:
-                print(f"Skipping position {position} = {sweep_value} (configuration not possible)")
                 continue
                 
-            print(f"Testing position {position} = {sweep_value}, block_sizes = {block_sizes}")
+            print(f"Testing position {position} = {sweep_value}")
             
             out, first_correct_step = generate_custom(
                 model, 
@@ -411,7 +402,6 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
             print(f"Best value for position {position}: {best_value} (step: {best_step})")
         else:
             print(f"No valid configuration found for position {position}")
-        print(f"Updated manual_settings: {manual_settings}")
         
         # Update global minimum
         if best_step < min_step:
