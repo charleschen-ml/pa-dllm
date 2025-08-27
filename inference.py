@@ -207,6 +207,18 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
             if blocks_to_reduce > 0:
                 raise ValueError(f"Cannot accommodate manual settings with given parameters")
         
+        elif total_adjustment < 0:
+            # Need to add to other blocks when manual blocks are smaller
+            blocks_to_add = -total_adjustment
+            j = len(block_sizes) - 1  # Start from last block
+            while blocks_to_add > 0 and j >= 0:
+                if j not in manual_settings:
+                    # Add to this block
+                    addition = min(blocks_to_add, gen_length - sum(block_sizes))
+                    block_sizes[j] += addition
+                    blocks_to_add -= addition
+                j -= 1
+        
         # Set all manual positions
         for pos, value in manual_settings.items():
             block_sizes[pos] = value
