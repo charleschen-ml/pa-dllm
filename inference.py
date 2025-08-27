@@ -314,7 +314,7 @@ def load_model(model_args):
 # 2) Reusable inference runner
 # -----------------------------
 
-def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False):
+def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     """
@@ -357,18 +357,19 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     manual_settings = {}
     
     # Greedy search: optimize each position one by one
-    for position in range(16):  # Search positions 0 through 15
+    num_blocks = gen_length // base_block_length
+    for position in range(num_blocks):  # Search all positions
         print(f"\n=== Optimizing position {position} ===")
         best_value = None
         best_step = float('inf')
         
-        for sweep_value in range(1, 33):  # Try values 1-32
+        for sweep_value in range(1, gen_length + 1):  # Try values 1 to gen_length
             current_settings = manual_settings.copy()
             current_settings[position] = sweep_value
             
             block_sizes = calculate_block_sizes(
-                gen_length=32, 
-                base_block_length=2, 
+                gen_length=gen_length, 
+                base_block_length=base_block_length, 
                 manual_settings=current_settings,
             )
             
@@ -381,8 +382,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
                 model, 
                 tokenizer, # charles added
                 input_ids, 
-                steps=16, 
-                gen_length=32, 
+                steps=steps, 
+                gen_length=gen_length, 
                 block_sizes=block_sizes, 
                 temperature=0., 
                 cfg_scale=0., 
