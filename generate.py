@@ -144,7 +144,7 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
                     token_pos = prompt.shape[1] + block_start + j
                     if token_pos < confidence.shape[1]:
                         conf_val = confidence[0, token_pos].item()
-                        print(f"DEBUG: Token {j}, pos {token_pos}, conf_val = {conf_val}")
+                        print(f"DEBUG: Token {j}, pos {token_pos}, conf_val = {conf_val:.2f}")
                         if conf_val != -np.inf:  # Only include non-masked tokens
                             block_confidence.append(conf_val)
                 print(f"DEBUG: Block {num_block} confidences: {block_confidence}")
@@ -292,7 +292,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                     token_pos = prompt.shape[1] + block_start + j
                     if token_pos < confidence.shape[1]:
                         conf_val = confidence[0, token_pos].item()
-                        print(f"DEBUG: Token {j}, pos {token_pos}, conf_val = {conf_val}")
+                        print(f"DEBUG: Token {j}, pos {token_pos}, conf_val = {conf_val:.2f}")
                         if conf_val != -np.inf:  # Only include non-masked tokens
                             block_confidence.append(conf_val)
                 print(f"DEBUG: Block {num_block} confidences: {block_confidence}")
