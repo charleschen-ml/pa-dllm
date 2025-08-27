@@ -282,6 +282,22 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
 
             # unmask (freeze) the tokens in x (also using advanced indexing)
             x[transfer_index] = x0[transfer_index]
+            
+            # Store confidence for this block if this is the last step of the block
+            if i == steps_per_block - 1:  # Last step of this block
+                print(f"DEBUG: Last step of block {num_block}, capturing confidence for size {block_size}")
+                block_confidence = []
+                for j in range(block_size):
+                    token_pos = prompt.shape[1] + block_start + j
+                    if token_pos < confidence.shape[1]:
+                        conf_val = confidence[0, token_pos].item()
+                        print(f"DEBUG: Token {j}, pos {token_pos}, conf_val = {conf_val}")
+                        if conf_val != -np.inf:  # Only include non-masked tokens
+                            block_confidence.append(conf_val)
+                print(f"DEBUG: Block {num_block} confidences: {block_confidence}")
+                if block_confidence:
+                    block_confidences[num_block] = block_confidence
+                    print(f"DEBUG: Stored confidences for block {num_block}: {block_confidences[num_block]}")
 
             # check answer correct
             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
