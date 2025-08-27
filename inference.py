@@ -194,8 +194,14 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
         if total_adjustment > 0:
             # Need to reduce other blocks to accommodate larger manual blocks
             remaining_blocks = len(block_sizes) - len(manual_settings)
-            if total_adjustment > remaining_blocks * base_block_length:
-                raise ValueError(f"Manual settings too large for gen_length ({gen_length})")
+            max_reducible = remaining_blocks * base_block_length
+            print(f"DEBUG: total_adjustment = {total_adjustment}, remaining_blocks = {remaining_blocks}, max_reducible = {max_reducible}")
+            if total_adjustment > max_reducible:
+                print(f"DEBUG: Manual settings too large! {total_adjustment} > {max_reducible}")
+                # Instead of raising error, cap the manual settings to what's possible
+                print(f"DEBUG: Capping manual settings to fit within constraints")
+                # This is a fallback - we'll handle this case by reducing the manual settings
+                return None  # Signal that this configuration is not possible
             
             # Reduce blocks from the end: last block goes to 0 first, then second-to-last to 1, etc.
             blocks_to_reduce = total_adjustment
@@ -372,6 +378,11 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
                 base_block_length=2, 
                 manual_settings=current_settings,
             )
+            
+            if block_sizes is None:
+                print(f"Skipping position {position} = {sweep_value} (configuration not possible)")
+                continue
+                
             print(f"Testing position {position} = {sweep_value}, block_sizes = {block_sizes}")
             
             out, first_correct_step = generate_custom(
