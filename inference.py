@@ -514,6 +514,9 @@ def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, ou
         prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
 
+        # print decoded input
+        print(f"decoded input=\n{tokenizer.decode(input_ids, skip_special_tokens=True)}")
+
         # Run generation
         out = generate_vanilla(
             model=model,
