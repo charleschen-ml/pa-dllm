@@ -81,8 +81,10 @@ def load_gsm8k(n=100):
     def extract_numerical(answer):
         match = re.search(r"####\s*([\d.,]+)", answer)
         if match:
+            num_str = match.group(1).replace(",", "")
             try:
-                return float(match.group(1).replace(",", ""))
+                # If it's a whole number, return as int; otherwise float
+                return int(num_str) if '.' not in num_str else float(num_str)
             except ValueError:
                 return None
         return None
@@ -90,7 +92,7 @@ def load_gsm8k(n=100):
     df["answer_numerical"] = df["answer"].apply(extract_numerical)
 
     # Save to CSV
-    output_path = "/content/drive/MyDrive/Colab_Notebooks/pa-dllm/gsm8k.csv"
+    output_path = "/content/drive/MyDrive/Colab_Notebooks/eic_llm/pa-dllm/gsm8k.csv"
     df.to_csv(output_path, index=False)
 
     print(f"Saved {len(df)} examples to {output_path}")
