@@ -98,49 +98,6 @@ def load_gsm8k(n=100):
     print(f"Saved {len(df)} examples to {output_path}")
     return df
 
-# # Score squad metrics (EM, F1) after inference
-# def score_squad(predictions, references):
-#     for i in range(min(len(predictions), 2)): # print at most 2 samples
-#         print(f"prediction {i} = {predictions[i]['prediction_text']}")
-#         print(f"reference {i} = {references[i]['answers']['text']}")
-#     metric = evaluate.load("squad")
-#     results = metric.compute(predictions=predictions, references=references)
-
-#     num_correct = int(results["exact_match"] * len(predictions) / 100)
-#     print(f"Exact Match: {results['exact_match']:.2f} ({num_correct}/{len(predictions)})")
-#     print(f"F1 Score: {results['f1']:.2f}")
-#     return results
-
-# Save inference outputs to csv
-def save_predictions_to_csv(predictions, references, output_csv_path):
-    metric = evaluate.load("squad")
-    rows = []
-
-    for pred, ref in zip(predictions, references):
-        pred_text = pred["prediction_text"]
-        ref_texts = ref["answers"]["text"]
-        joined_refs = ", ".join([r.strip() for r in ref_texts])
-
-        score = metric.compute(
-            predictions=[{"prediction_text": pred_text, "id": pred["id"]}],
-            references=[{"answers": {"text": ref_texts, "answer_start": [0] * len(ref_texts)}, "id": ref["id"]}]
-        )
-
-        rows.append({
-            "prediction": pred_text,
-            "reference": joined_refs,
-            "exact_match": score["exact_match"],
-            "f1_score": score["f1"]
-        })
-        rows.sort(key=lambda x: x["f1_score"])  # sort by worst predictions
-
-    with open(output_csv_path, "w", newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=["prediction", "reference", "exact_match", "f1_score"])
-        writer.writeheader()
-        writer.writerows(rows)
-
-    print(f"✅ Saved {len(rows)} results to {output_csv_path}")
-
 def make_parser(subparsers: argparse._SubParsersAction = None):
     dataclass_types = (ScriptArguments, ModelConfig)
     if subparsers is not None:
@@ -180,8 +137,6 @@ def make_parser(subparsers: argparse._SubParsersAction = None):
     parser.add_argument("--default_bit", type=int, default=32,
                        help="Default bit for all layers")
     return parser
-
-
 
 def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sweep_value=None, manual_settings=None):
     '''
@@ -303,9 +258,7 @@ def calculate_block_sizes(gen_length, base_block_length, sweep_position=None, sw
     
     return block_sizes
 
-# -----------------------------
-# 1) Load once, reuse everywhere
-# -----------------------------
+# Load model
 def load_model(model_args):
     """Load tokenizer + model once and return (model, tokenizer, device).
     Works for normal and k-bit quantized loads depending on model_args.
@@ -326,11 +279,7 @@ def load_model(model_args):
     print(f"✅ Loaded model: {model_args.model_name_or_path} on {device}")
     return model, tokenizer, device
 
-# -----------------------------
-# 2) Reusable inference runner
-# -----------------------------
-
-# Original inference
+# Run original inference
 def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
@@ -375,13 +324,11 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
 
     return
 
-# Greedy inference
+# Run Greedy inference
 def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     """
-
-    print(f"prompt=\n{prompt}")
 
     # Add special tokens for the Instruct model (not required for base model)
     m = [{"role": "user", "content": prompt}, ]
@@ -394,19 +341,6 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
     # debug
     inputs_decoded = tokenizer.decode(input_ids[0], skip_special_tokens=True)
     print(f"decoded inputs=\n{inputs_decoded}")
-
-    # # original llada generate()
-    # out = generate(
-    #     model, 
-    #     tokenizer, # charles added
-    #     input_ids, 
-    #     steps=16, 
-    #     gen_length=32, 
-    #     block_length=2, 
-    #     temperature=0., 
-    #     cfg_scale=0., 
-    #     remasking='low_confidence'
-    # )
 
     # custom generate with block size as list
     first_correct_steps = []
@@ -540,6 +474,73 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
     # print(f"decoded output=\n{outputs_decoded}")
 
     return
+
+def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, output_csv_path,
+                        steps=16, gen_length=32, block_length=2):
+    import pandas as pd
+    import re
+
+    def extract_numerical(text):
+        """Extract the final boxed numerical answer (e.g., from \boxed{72}) or trailing number."""
+        # Try to extract from \boxed{...}
+        boxed_match = re.search(r"\\boxed{([\d.,]+)}", text)
+        if boxed_match:
+            num_str = boxed_match.group(1).replace(",", "")
+        else:
+            # Try to extract last number in string
+            num_match = re.search(r"(\d+(?:\.\d+)?)\s*$", text.strip())
+            num_str = num_match.group(1) if num_match else None
+
+        if num_str is None:
+            return None
+        try:
+            return int(num_str) if '.' not in num_str else float(num_str)
+        except ValueError:
+            return None
+
+    print(f"📥 Loading: {input_csv_path}")
+    df = pd.read_csv(input_csv_path)
+    print(f"🔢 Found {len(df)} rows")
+
+    completions = []
+    completion_numericals = []
+
+    for i, row in enumerate(df.itertuples(), start=1):
+        question = getattr(row, "question")
+
+        # Apply chat template
+        messages = [{"role": "user", "content": question}]
+        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+
+        # Run generation
+        out = generate_vanilla(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=input_ids,
+            steps=steps,
+            gen_length=gen_length,
+            block_length=block_length,
+            temperature=0.0,
+            cfg_scale=0.0,
+            remasking="low_confidence"
+        )
+
+        # Decode the output
+        output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        numeric_answer = extract_numerical(output_text)
+
+        completions.append(output_text)
+        completion_numericals.append(numeric_answer)
+
+        print(f"[{i}] ✅ Q: {question.strip()[:50]}... → A: {output_text.strip()[:50]}... → #{numeric_answer}")
+
+    # Save results
+    df["completion"] = completions
+    df["completion_numerical"] = completion_numericals
+    df.to_csv(output_csv_path, index=False)
+    print(f"\n✅ Saved output to: {output_csv_path}")
+
 
 def main(script_args, model_args, inference_args):
     """
