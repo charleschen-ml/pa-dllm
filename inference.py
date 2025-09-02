@@ -330,7 +330,53 @@ def load_model(model_args):
 # 2) Reusable inference runner
 # -----------------------------
 
+# Original inference
 def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
+    """Run a single prompt without reloading the model.
+    Pass model_args.use_cache=False for LLaDA/MDM-style models.
+    """
+
+    print(f"prompt=\n{prompt}")
+
+    # Add special tokens for the Instruct model (not required for base model)
+    m = [{"role": "user", "content": prompt}, ]
+    prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+
+    input_ids = tokenizer(prompt)['input_ids']
+
+    input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
+
+    # debug
+    inputs_decoded = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+    print(f"decoded inputs=\n{inputs_decoded}")
+
+    # original llada generate()
+    out = generate_vanilla(
+        model, 
+        tokenizer, # charles added
+        input_ids, 
+        steps=16, 
+        gen_length=32, 
+        block_length=2, 
+        temperature=0., 
+        cfg_scale=0., 
+        remasking='low_confidence'
+    )
+
+    # out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+    # print("\n" + out_text)
+    # print(f"Answer correct? {extract_boxed(out_text) == 72}")
+
+    # debug
+    # outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
+    # print(f"outputs_ids=\n{outputs_ids}")
+    # outputs_decoded = tokenizer.decode(outputs_ids, skip_special_tokens=False)
+    # print(f"decoded output=\n{outputs_decoded}")
+
+    return
+
+# Greedy inference
+def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     """
