@@ -92,7 +92,7 @@ def load_gsm8k(n=100):
     df["answer_numerical"] = df["answer"].apply(extract_numerical)
 
     # Save to CSV
-    output_path = "/content/drive/MyDrive/Colab_Notebooks/eic_llm/pa-dllm/gsm8k.csv"
+    output_path = "/content/drive/MyDrive/Colab_Notebooks/pa-dllm/gsm8k.csv"
     df.to_csv(output_path, index=False)
 
     print(f"Saved {len(df)} examples to {output_path}")
