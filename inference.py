@@ -63,17 +63,25 @@ class InferenceArguments:
         self.inf_bit_config = inf_bit_config
         self.default_bit = default_bit
 
-def load_gsm8k():
+def load_gsm8k(n=100):
     from datasets import load_dataset
-    ds = load_dataset("openai/gsm8k", "main")
+    import pandas as pd
 
-    # load the first n examples
-    ds = ds.select(range(100))
-    
-    # save to csv
-    ds.to_csv("/content/drive/MyDrive/Colab_Notebooks/eic_llm/pa-dllm/gsm8k.csv")
+    # Load the GSM8K dataset (train split)
+    ds = load_dataset("openai/gsm8k", "main", split="train")
 
-    return None
+    # Select the first n examples
+    ds_small = ds.select(range(min(n, len(ds))))
+
+    # Convert to pandas DataFrame
+    df = pd.DataFrame(ds_small)
+
+    # Save to CSV
+    output_path = "/content/drive/MyDrive/Colab_Notebooks/eic_llm/pa-dllm/gsm8k.csv"
+    df.to_csv(output_path, index=False)
+
+    print(f"Saved {len(df)} examples to {output_path}")
+    return df
 
 # # Score squad metrics (EM, F1) after inference
 # def score_squad(predictions, references):
