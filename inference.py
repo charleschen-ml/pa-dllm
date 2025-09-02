@@ -348,7 +348,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
 
     # debug
     inputs_decoded = tokenizer.decode(input_ids[0], skip_special_tokens=True)
-    print(f"decoded inputs=\n{inputs_decoded}")
+    # print(f"decoded inputs=\n{inputs_decoded}")
 
     # original llada generate()
     out = generate_vanilla(
