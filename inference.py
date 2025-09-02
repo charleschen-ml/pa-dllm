@@ -515,7 +515,7 @@ def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, ou
         input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
 
         # print decoded input
-        print(f"decoded input=\n{tokenizer.decode(input_ids, skip_special_tokens=True)}")
+        print(f"decoded input=\n{tokenizer.decode(input_ids[0], skip_special_tokens=True)}")
 
         # Run generation
         out = generate_vanilla(
