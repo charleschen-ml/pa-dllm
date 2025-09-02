@@ -262,9 +262,9 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
             # out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
             # print("\n" + out_text)
         
-        # print final output
-        out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
-        print("\n" + out_text)
+    # print final output
+    out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
+    print("\n" + out_text)
 
     return x
 
