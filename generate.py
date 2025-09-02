@@ -44,13 +44,131 @@ def get_num_transfer_tokens(mask_index, steps):
 
     return num_transfer_tokens
 
+# @ torch.no_grad()
+# def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=128, temperature=0.,
+#              cfg_scale=0., remasking='low_confidence', mask_id=126336):
+#     '''
+#     Args:
+#         model: Mask predictor.
+#         prompt: A tensor of shape (1, L).
+#         steps: Sampling steps, less than or equal to gen_length.
+#         gen_length: Generated answer length.
+#         block_length: Block length, less than or equal to gen_length. If less than gen_length, it means using semi_autoregressive remasking.
+#         temperature: Categorical distribution sampling temperature.
+#         cfg_scale: Unsupervised classifier-free guidance scale.
+#         remasking: Remasking strategy. 'low_confidence' or 'random'.
+#         mask_id: The toke id of [MASK] is 126336.
+#     '''
 
-@ torch.no_grad()
-def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=128, temperature=0.,
-             cfg_scale=0., remasking='low_confidence', mask_id=126336):
+#     # Create x = prompt + completion 
+#     x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(model.device)
+#     x[:, :prompt.shape[1]] = prompt.clone() # initialize prompt, while leaving completion tokens as <mask>
+
+#     prompt_index = (x != mask_id) # create boolean mask with prompt = T, completion = F
+#                                 # e.g. [T, T, T, ..., F, F, F, ...]
+#                                 # used later if cfg enabled
+
+#     assert gen_length % block_length == 0
+#     num_blocks = gen_length // block_length
+
+#     assert steps % num_blocks == 0
+#     steps = steps // num_blocks # convert total_steps to steps_per_block
+
+#     first_correct_step = None  # Track first step with correct answer
+#     for num_block in range(num_blocks):
+
+#         # initialize boolean mask to all <mask> in current block
+#         block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:] == mask_id)
+
+#         # calculate number of tokens to unmask at each step
+#         num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
+
+#         for i in range(steps):
+#             total_step = num_block * steps + i + 1 # total steps as efficiency metric
+            
+#             mask_index = (x == mask_id) # update the boolean mask (since last step)
+#             if cfg_scale > 0.:
+#                 un_x = x.clone()
+#                 un_x[prompt_index] = mask_id
+#                 x_ = torch.cat([x, un_x], dim=0)
+#                 logits = model(x_).logits
+#                 logits, un_logits = torch.chunk(logits, 2, dim=0)
+#                 logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+#             else:
+#                 logits = model(x).logits # get logits with current x
+
+#             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
+#             x0 = torch.argmax(logits_with_noise, dim=-1) # get index of token with highest logit at each position
+
+#             if remasking == 'low_confidence':
+#                 p = F.softmax(logits, dim=-1) # convert logits to probs
+                
+#                 # extract prob at each position with highest logit
+#                 x0_p = torch.squeeze( 
+#                     torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+#             elif remasking == 'random':
+#                 x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+#             else:
+#                 raise NotImplementedError(remasking)
+
+#             # mask out tokens beyond the current block
+#             x0_p[:, prompt.shape[1] + (num_block + 1) * block_length:] = -np.inf
+
+#             # torch.where(mask, tensor_A, tensor_B): if mask_index is True, use tensor A, otherwise use tensor B
+#             # if token is true (masked), use x0 (token index with highest logit)
+#             # otherwise use x (original token)
+#             x0 = torch.where(mask_index, x0, x)
+#             confidence = torch.where(mask_index, x0_p, -np.inf)
+
+#             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+#             for j in range(confidence.shape[0]): # loop through each batch
+#                 # torch.topk(input, k): selects the top k tokens from "input" (list)
+#                 # returns (values, indices)
+#                 _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
+                
+#                 # use "advanced indexing" to set all indices in select_index
+#                 # equivalent to saying:
+#                 # for index in select_index:
+#                 #   transfer_index[j, index] = True
+#                 transfer_index[j, select_index] = True
+
+#             # unmask (freeze) the tokens in x (also using advanced indexing)
+#             x[transfer_index] = x0[transfer_index]
+            
+#             # Store confidence for this block if this is the last step of the block
+#             if i == steps_per_block - 1:  # Last step of this block
+
+#                 block_confidence = []
+#                 for j in range(block_size):
+#                     token_pos = prompt.shape[1] + block_start + j
+#                     if token_pos < confidence.shape[1]:
+#                         conf_val = confidence[0, token_pos].item()
+
+#                         if conf_val != -np.inf:  # Only include non-masked tokens
+#                             block_confidence.append(conf_val)
+
+#                 if block_confidence:
+#                     block_confidences[num_block] = block_confidence
+
+
+#             # check answer correct
+#             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
+#             print("\n" + out_text)
+#             is_correct = extract_boxed(out_text) == 72
+#             if is_correct and first_correct_step is None:
+#                 first_correct_step = total_step
+#             print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
+
+#     print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else 'Never'}")
+#     return x
+
+@torch.no_grad()
+def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_length=128, temperature=0.,
+                     cfg_scale=0., remasking='low_confidence', mask_id=126336, expected_answer=None):
     '''
     Args:
         model: Mask predictor.
+        tokenizer: Tokenizer for decoding outputs.
         prompt: A tensor of shape (1, L).
         steps: Sampling steps, less than or equal to gen_length.
         gen_length: Generated answer length.
@@ -58,36 +176,40 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
         temperature: Categorical distribution sampling temperature.
         cfg_scale: Unsupervised classifier-free guidance scale.
         remasking: Remasking strategy. 'low_confidence' or 'random'.
-        mask_id: The toke id of [MASK] is 126336.
+        mask_id: The token id of [MASK] is 126336.
+        expected_answer: Optional, if set will compare against `extract_boxed()` for correctness logging.
     '''
 
     # Create x = prompt + completion 
     x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(model.device)
-    x[:, :prompt.shape[1]] = prompt.clone() # initialize prompt, while leaving completion tokens as <mask>
+    x[:, :prompt.shape[1]] = prompt.clone()  # initialize prompt, while leaving completion tokens as <mask>
 
-    prompt_index = (x != mask_id) # create boolean mask with prompt = T, completion = F
-                                # e.g. [T, T, T, ..., F, F, F, ...]
-                                # used later if cfg enabled
+    prompt_index = (x != mask_id)  # create boolean mask with prompt = T, completion = F
+                                   # e.g. [T, T, T, ..., F, F, F, ...]
+                                   # used later if cfg enabled
 
     assert gen_length % block_length == 0
     num_blocks = gen_length // block_length
 
     assert steps % num_blocks == 0
-    steps = steps // num_blocks # convert total_steps to steps_per_block
+    steps_per_block = steps // num_blocks  # convert total_steps to steps_per_block
 
     first_correct_step = None  # Track first step with correct answer
+
     for num_block in range(num_blocks):
 
         # initialize boolean mask to all <mask> in current block
-        block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:] == mask_id)
+        block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: 
+                                 prompt.shape[1] + (num_block + 1) * block_length] == mask_id)
 
         # calculate number of tokens to unmask at each step
-        num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
+        num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps_per_block)
 
-        for i in range(steps):
-            total_step = num_block * steps + i + 1 # total steps as efficiency metric
-            
-            mask_index = (x == mask_id) # update the boolean mask (since last step)
+        for i in range(steps_per_block):
+            total_step = num_block * steps_per_block + i + 1  # total steps as efficiency metric
+
+            mask_index = (x == mask_id)  # update the boolean mask (since last step)
+
             if cfg_scale > 0.:
                 un_x = x.clone()
                 un_x[prompt_index] = mask_id
@@ -96,17 +218,17 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
                 logits, un_logits = torch.chunk(logits, 2, dim=0)
                 logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
             else:
-                logits = model(x).logits # get logits with current x
+                logits = model(x).logits  # get logits with current x
 
             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
-            x0 = torch.argmax(logits_with_noise, dim=-1) # get index of token with highest logit at each position
+            x0 = torch.argmax(logits_with_noise, dim=-1)  # get index of token with highest logit at each position
 
             if remasking == 'low_confidence':
-                p = F.softmax(logits, dim=-1) # convert logits to probs
-                
+                p = F.softmax(logits, dim=-1)  # convert logits to probs
+
                 # extract prob at each position with highest logit
                 x0_p = torch.squeeze( 
-                    torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+                    torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)  # b, l
             elif remasking == 'random':
                 x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
             else:
@@ -122,11 +244,11 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
             confidence = torch.where(mask_index, x0_p, -np.inf)
 
             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            for j in range(confidence.shape[0]): # loop through each batch
+            for j in range(confidence.shape[0]):  # loop through each batch
                 # torch.topk(input, k): selects the top k tokens from "input" (list)
                 # returns (values, indices)
                 _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
-                
+
                 # use "advanced indexing" to set all indices in select_index
                 # equivalent to saying:
                 # for index in select_index:
@@ -135,34 +257,24 @@ def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=1
 
             # unmask (freeze) the tokens in x (also using advanced indexing)
             x[transfer_index] = x0[transfer_index]
-            
-            # Store confidence for this block if this is the last step of the block
-            if i == steps_per_block - 1:  # Last step of this block
-
-                block_confidence = []
-                for j in range(block_size):
-                    token_pos = prompt.shape[1] + block_start + j
-                    if token_pos < confidence.shape[1]:
-                        conf_val = confidence[0, token_pos].item()
-
-                        if conf_val != -np.inf:  # Only include non-masked tokens
-                            block_confidence.append(conf_val)
-
-                if block_confidence:
-                    block_confidences[num_block] = block_confidence
-
 
             # check answer correct
             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
             print("\n" + out_text)
-            is_correct = extract_boxed(out_text) == 72
-            if is_correct and first_correct_step is None:
-                first_correct_step = total_step
-            print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
 
-    print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else 'Never'}")
+            if expected_answer is not None:
+                try:
+                    is_correct = extract_boxed(out_text) == expected_answer
+                except:
+                    is_correct = False
+                print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
+                if is_correct and first_correct_step is None:
+                    first_correct_step = total_step
+
+    if expected_answer is not None:
+        print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else 'Never'}")
+
     return x
-
 
 @ torch.no_grad()
 def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_sizes=None, temperature=0.,
