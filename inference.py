@@ -63,6 +63,18 @@ class InferenceArguments:
         self.inf_bit_config = inf_bit_config
         self.default_bit = default_bit
 
+def load_gsm8k():
+    from datasets import load_dataset
+    ds = load_dataset("openai/gsm8k", "main")
+
+    # load the first n examples
+    ds = ds.select(range(100))
+    
+    # save to csv
+    ds.to_csv("/content/drive/MyDrive/Colab_Notebooks/eic_llm/pa-dllm/gsm8k.csv")
+
+    return None
+
 # # Score squad metrics (EM, F1) after inference
 # def score_squad(predictions, references):
 #     for i in range(min(len(predictions), 2)): # print at most 2 samples
