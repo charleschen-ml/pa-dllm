@@ -66,8 +66,9 @@ class InferenceArguments:
 def load_gsm8k(n=100):
     from datasets import load_dataset
     import pandas as pd
+    import re
 
-    # Load the GSM8K dataset (train split)
+    # Load GSM8K dataset (train split)
     ds = load_dataset("openai/gsm8k", "main", split="train")
 
     # Select the first n examples
@@ -76,8 +77,20 @@ def load_gsm8k(n=100):
     # Convert to pandas DataFrame
     df = pd.DataFrame(ds_small)
 
+    # Extract the numerical answer from the last line starting with '####'
+    def extract_numerical(answer):
+        match = re.search(r"####\s*([\d.,]+)", answer)
+        if match:
+            try:
+                return float(match.group(1).replace(",", ""))
+            except ValueError:
+                return None
+        return None
+
+    df["answer_numerical"] = df["answer"].apply(extract_numerical)
+
     # Save to CSV
-    output_path = "/content/drive/MyDrive/Colab_Notebooks/pa-dllm/gsm8k.csv"
+    output_path = "/content/drive/MyDrive/Colab_Notebooks/eic_llm/pa-dllm/gsm8k.csv"
     df.to_csv(output_path, index=False)
 
     print(f"Saved {len(df)} examples to {output_path}")
