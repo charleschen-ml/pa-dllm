@@ -277,25 +277,6 @@ def load_model(model_args):
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # # Tokenizer
-    # tokenizer = AutoTokenizer.from_pretrained(
-    #     model_args.model_name_or_path,
-    #     padding_side="left",
-    #     trust_remote_code=getattr(model_args, "trust_remote_code", True),
-    # )
-    # tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    # if getattr(tokenizer, "chat_template", None) is None:
-    #     tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
-
-    # # Model
-    # quantization_config = get_quantization_config(model_args)
-    # model = AutoModelForCausalLM.from_pretrained(
-    #     model_args.model_name_or_path,
-    #     trust_remote_code=getattr(model_args, "trust_remote_code", True),
-    #     quantization_config=quantization_config,
-    #     device_map=get_kbit_device_map() if quantization_config is not None else None,
-    # ).to(device)
-
     model = AutoModel.from_pretrained(
         'GSAI-ML/LLaDA-8B-Instruct', 
         trust_remote_code=True, 
@@ -485,90 +466,80 @@ def main(script_args, model_args, inference_args):
         script_args, training_args, model_args: Standard TRL arguments
         inference_args: InferenceArguments object containing inference-specific parameters
     """
-    # Convert string arguments to lists if they're strings
-    if isinstance(inference_args.bit_choices, str):
-        bit_choices = [int(x.strip()) for x in inference_args.bit_choices.split(",")]
-    else:
-        bit_choices = inference_args.bit_choices
+    # # Convert string arguments to lists if they're strings
+    # if isinstance(inference_args.bit_choices, str):
+    #     bit_choices = [int(x.strip()) for x in inference_args.bit_choices.split(",")]
+    # else:
+    #     bit_choices = inference_args.bit_choices
         
-    if isinstance(inference_args.quant_layers, str):
-        quant_layers = [int(x.strip()) for x in inference_args.quant_layers.split(",")]
-    else:
-        quant_layers = inference_args.quant_layers
+    # if isinstance(inference_args.quant_layers, str):
+    #     quant_layers = [int(x.strip()) for x in inference_args.quant_layers.split(",")]
+    # else:
+    #     quant_layers = inference_args.quant_layers
     
-    # Load validation examples from JSON
-    # with open(inference_args.eval_json_path, "r") as f:
-    #     dataset = [json.loads(line) for line in f][:inference_args.max_inf_size]
-    # print(f"Examples used for inference: {len(dataset)}")
+    # # Load validation examples from JSON
+    # # with open(inference_args.eval_json_path, "r") as f:
+    # #     dataset = [json.loads(line) for line in f][:inference_args.max_inf_size]
+    # # print(f"Examples used for inference: {len(dataset)}")
 
-    ################
-    # Model & Tokenizer
-    ################
-    # torch_dtype = (
-    #     model_args.torch_dtype if model_args.torch_dtype in ["auto", None] else getattr(torch, model_args.torch_dtype)
+    # ################
+    # # Model & Tokenizer
+    # ################
+    # quantization_config = get_quantization_config(model_args)
+
+    # # load tokenizer
+    # tokenizer = AutoTokenizer.from_pretrained(
+    #     model_args.model_name_or_path, 
+    #     padding_side="left", 
+    #     trust_remote_code=model_args.trust_remote_code,
     # )
-    quantization_config = get_quantization_config(model_args)
-    # model_kwargs = dict(
-    #     revision=model_args.model_revision,
-    #     attn_implementation=model_args.attn_implementation,
-    #     torch_dtype=torch_dtype,
-    #     device_map=get_kbit_device_map() if quantization_config is not None else None,
-    #     quantization_config=quantization_config,
-    # )
+    # tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    # if tokenizer.chat_template is None:
+    #     tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
 
-    # load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path, 
-        padding_side="left", 
-        trust_remote_code=model_args.trust_remote_code,
-    )
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    if tokenizer.chat_template is None:
-        tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
+    # # load base model
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # model = AutoModelForCausalLM.from_pretrained(
+    #     model_args.model_name_or_path, 
+    #     trust_remote_code=model_args.trust_remote_code,
+    # ).to(device)
+    # print(f"Loaded base model path: {model_args.model_name_or_path}")
 
-    # load base model
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_args.model_name_or_path, 
-        trust_remote_code=model_args.trust_remote_code,
-    ).to(device)
-    print(f"Loaded base model path: {model_args.model_name_or_path}")
+    # ################
+    # # Inference
+    # ################
 
-    ################
-    # Inference
-    ################
+    # # Inference loop
+    # predictions, references = [], []
 
-    # Inference loop
-    predictions, references = [], []
+    # print("\nINFERENCE:\n")
 
-    print("\nINFERENCE:\n")
+    # question = "What is 2*2?"
+    # prompt = f"{question}\n"
+    # print(f"prompt = \n{prompt}")
 
-    question = "What is 2*2?"
-    prompt = f"{question}\n"
-    print(f"prompt = \n{prompt}")
+    # inputs = tokenizer(
+    #     prompt,
+    #     return_tensors="pt",
+    #     padding=True,
+    #     truncation=True,
+    #     max_length=512,
+    # ).to(device)
 
-    inputs = tokenizer(
-        prompt,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=512,
-    ).to(device)
+    # with torch.no_grad():
+    #     outputs = model.generate(
+    #         **inputs,
+    #         max_new_tokens=32,
+    #         do_sample=False,
+    #         use_cache=False, # required to disable KV cache
+    #         eos_token_id=tokenizer.eos_token_id,
+    #         pad_token_id=tokenizer.eos_token_id
+    #     )
 
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=32,
-            do_sample=False,
-            use_cache=False, # required to disable KV cache
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id
-        )
+    # generated = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True).strip()
+    # # generated_truncated = generated.split("\n")[0].strip()
 
-    generated = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True).strip()
-    # generated_truncated = generated.split("\n")[0].strip()
-
-    print(f"generated=\n{generated}")
+    # print(f"generated=\n{generated}")
 
     return 0
 
