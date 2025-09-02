@@ -258,21 +258,13 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
             # unmask (freeze) the tokens in x (also using advanced indexing)
             x[transfer_index] = x0[transfer_index]
 
-            # check answer correct
-            out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
-            print("\n" + out_text)
-
-            if expected_answer is not None:
-                try:
-                    is_correct = extract_boxed(out_text) == expected_answer
-                except:
-                    is_correct = False
-                print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
-                if is_correct and first_correct_step is None:
-                    first_correct_step = total_step
-
-    if expected_answer is not None:
-        print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else 'Never'}")
+            # print intermediate outputs
+            # out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
+            # print("\n" + out_text)
+        
+        # print final output
+        out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
+        print("\n" + out_text)
 
     return x
 
