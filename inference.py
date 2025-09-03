@@ -324,6 +324,82 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
 
     return
 
+def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, output_csv_path,
+                        steps=16, gen_length=32, block_length=2):
+    import pandas as pd
+    import re
+
+    def extract_numerical(text):
+        """Extract the final boxed numerical answer (e.g., from \boxed{72}) or trailing number."""
+        # Try to extract from \boxed{...}
+        boxed_match = re.search(r"\\boxed{([\d.,]+)}", text)
+        if boxed_match:
+            num_str = boxed_match.group(1).replace(",", "")
+        else:
+            # Try to extract last number in string
+            num_match = re.search(r"(\d+(?:\.\d+)?)\s*$", text.strip())
+            num_str = num_match.group(1) if num_match else None
+
+        if num_str is None:
+            return None
+        try:
+            return int(num_str) if '.' not in num_str else float(num_str)
+        except ValueError:
+            return None
+
+    print(f"📥 Loading: {input_csv_path}")
+    df = pd.read_csv(input_csv_path)
+    print(f"🔢 Found {len(df)} rows")
+
+    completions = []
+    completion_numericals = []
+
+    for i, row in enumerate(df.itertuples(), start=1):
+        question = getattr(row, "question")
+
+        # Apply chat template
+        instr = "Solve this problem and box your final answer:\n"
+        messages = [{"role": "user", "content": instr + question}]
+        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+
+        # print decoded input
+        print(f"decoded input=\n{tokenizer.decode(input_ids[0], skip_special_tokens=True)}")
+
+        # Run generation
+        out = generate_vanilla(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=input_ids,
+            steps=steps,
+            gen_length=gen_length,
+            block_length=block_length,
+            temperature=0.0,
+            cfg_scale=0.0,
+            remasking="low_confidence"
+        )
+
+        # Decode the output
+        output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        numeric_answer = extract_numerical(output_text)
+
+        completions.append(output_text)
+        completion_numericals.append(numeric_answer)
+
+        print(f"[{i}] ✅ Q: {question.strip()[:50]}... → A: {output_text.strip()[:50]}... → #{numeric_answer}")
+
+    # Calculate the percentage of correct answers
+    correct_count = sum(df['answer_numerical'] == df['completion_numerical'])
+    total_count = len(df)
+    score_percentage = (correct_count / total_count) * 100
+    print(f"Final Score: {correct_count}/{total_count} ({score_percentage:.2f}%) correct")
+
+    # Save results
+    df["completion"] = completions
+    df["completion_numerical"] = completion_numericals
+    df.to_csv(output_csv_path, index=False)
+    print(f"\n✅ Saved output to: {output_csv_path}")
+
 # Run Greedy inference
 def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
     """Run a single prompt without reloading the model.
@@ -474,77 +550,6 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
     # print(f"decoded output=\n{outputs_decoded}")
 
     return
-
-def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, output_csv_path,
-                        steps=16, gen_length=32, block_length=2):
-    import pandas as pd
-    import re
-
-    def extract_numerical(text):
-        """Extract the final boxed numerical answer (e.g., from \boxed{72}) or trailing number."""
-        # Try to extract from \boxed{...}
-        boxed_match = re.search(r"\\boxed{([\d.,]+)}", text)
-        if boxed_match:
-            num_str = boxed_match.group(1).replace(",", "")
-        else:
-            # Try to extract last number in string
-            num_match = re.search(r"(\d+(?:\.\d+)?)\s*$", text.strip())
-            num_str = num_match.group(1) if num_match else None
-
-        if num_str is None:
-            return None
-        try:
-            return int(num_str) if '.' not in num_str else float(num_str)
-        except ValueError:
-            return None
-
-    print(f"📥 Loading: {input_csv_path}")
-    df = pd.read_csv(input_csv_path)
-    print(f"🔢 Found {len(df)} rows")
-
-    completions = []
-    completion_numericals = []
-
-    for i, row in enumerate(df.itertuples(), start=1):
-        question = getattr(row, "question")
-
-        # Apply chat template
-        instr = "Solve this problem and box your final answer:\n"
-        messages = [{"role": "user", "content": instr + question}]
-        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-        input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
-
-        # print decoded input
-        print(f"decoded input=\n{tokenizer.decode(input_ids[0], skip_special_tokens=True)}")
-
-        # Run generation
-        out = generate_vanilla(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=input_ids,
-            steps=steps,
-            gen_length=gen_length,
-            block_length=block_length,
-            temperature=0.0,
-            cfg_scale=0.0,
-            remasking="low_confidence"
-        )
-
-        # Decode the output
-        output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
-        numeric_answer = extract_numerical(output_text)
-
-        completions.append(output_text)
-        completion_numericals.append(numeric_answer)
-
-        print(f"[{i}] ✅ Q: {question.strip()[:50]}... → A: {output_text.strip()[:50]}... → #{numeric_answer}")
-
-    # Save results
-    df["completion"] = completions
-    df["completion_numerical"] = completion_numericals
-    df.to_csv(output_csv_path, index=False)
-    print(f"\n✅ Saved output to: {output_csv_path}")
-
 
 def main(script_args, model_args, inference_args):
     """
