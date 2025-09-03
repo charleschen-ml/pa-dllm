@@ -396,12 +396,17 @@ def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, ou
 
     return df
 
-def calculate_score(df):
-    """Calculate and print the percentage of correct answers."""
+def calculate_score(df, correct_csv_path="correct_questions.csv"):
+    """Calculate and print the percentage of correct answers, and save correct questions to a CSV."""
     correct_count = sum(df['answer_numerical'] == df['completion_numerical'])
     total_count = len(df)
     score_percentage = (correct_count / total_count) * 100
     print(f"Final Score: {correct_count}/{total_count} ({score_percentage:.2f}%) correct")
+
+    # Filter correct questions
+    correct_df = df[df['answer_numerical'] == df['completion_numerical']]
+    correct_df.to_csv(correct_csv_path, index=False)
+    print(f"Correct questions saved to {correct_csv_path}")
 
 # Run Greedy inference
 def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
