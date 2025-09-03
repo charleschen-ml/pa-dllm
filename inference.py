@@ -388,17 +388,20 @@ def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, ou
 
         print(f"[{i}] ✅ Q: {question.strip()[:50]}... → A: {output_text.strip()[:50]}... → #{numeric_answer}")
 
-    # Calculate the percentage of correct answers
-    correct_count = sum(df['answer_numerical'] == df['completion_numerical'])
-    total_count = len(df)
-    score_percentage = (correct_count / total_count) * 100
-    print(f"Final Score: {correct_count}/{total_count} ({score_percentage:.2f}%) correct")
-
     # Save results
     df["completion"] = completions
     df["completion_numerical"] = completion_numericals
     df.to_csv(output_csv_path, index=False)
     print(f"\n✅ Saved output to: {output_csv_path}")
+
+    return df
+
+def calculate_score(df):
+    """Calculate and print the percentage of correct answers."""
+    correct_count = sum(df['answer_numerical'] == df['completion_numerical'])
+    total_count = len(df)
+    score_percentage = (correct_count / total_count) * 100
+    print(f"Final Score: {correct_count}/{total_count} ({score_percentage:.2f}%) correct")
 
 # Run Greedy inference
 def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
