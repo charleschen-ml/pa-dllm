@@ -18,7 +18,7 @@ importlib = __import__('importlib')
 importlib.reload(inference)
 
 # Load inference functions
-from inference import run_inference_batch, calculate_score
+from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference
 
 # FASTEST: Load model weights and recreate architecture
 print("Loading saved model (fast method)...")
@@ -83,34 +83,39 @@ if torch.cuda.is_available():
 # Run single inference
 # run_inference(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=2, steps=8)
 
-"""Batch"""
+# """Batch"""
 
-# Google Drive refresh removed - running on local server
+# # Google Drive refresh removed - running on local server
 
-# Run batch inference
-df = run_inference_batch(
-    model=model,
-    tokenizer=tokenizer,
-    device=device,
-    model_args=model_args,
-    input_csv_path="./data/gsm8k.csv",
-    output_csv_path="./data/gsm8k_output.csv",
-    steps=32,
-    gen_length=32,
-    block_length=1
-)
+# # Run batch inference
+# df = run_inference_batch(
+#     model=model,
+#     tokenizer=tokenizer,
+#     device=device,
+#     model_args=model_args,
+#     input_csv_path="./data/gsm8k.csv",
+#     output_csv_path="./data/gsm8k_output.csv",
+#     steps=32,
+#     gen_length=32,
+#     block_length=1
+# )
 
-# Load df from csv
-df = pd.read_csv("./data/gsm8k_output.csv")
+# # Load df from csv
+# df = pd.read_csv("./data/gsm8k_output.csv")
 
-# Google Drive refresh removed - running on local server
+# # Google Drive refresh removed - running on local server
 
-# Calculate score
-correct_path = "./data/gsm8k_correct.csv"
-calculate_score(df, correct_path)
+# # Calculate score
+# correct_path = "./data/gsm8k_correct.csv"
+# calculate_score(df, correct_path)
 
 """Greedy"""
 
+# Load single prompt
+instr = "Solve this problem and box your final answer:\n"
+question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?"
+prompt = instr + question
+
 # Run greedy inference
-# run_greedy_inference(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=1, steps=16)
+run_greedy_inference(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=1, steps=16)
 

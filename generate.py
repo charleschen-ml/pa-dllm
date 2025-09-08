@@ -313,6 +313,8 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
 
     first_correct_step = None  # Track first step with correct answer
     block_confidences = {}  # Track confidence for each block
+    # Track per-step confidences (decoded vs remaining) to print at the end
+    per_step_logs = []
 
     # Calculate cumulative block positions
     block_starts = [0] + [sum(block_sizes[:i]) for i in range(1, len(block_sizes))]
@@ -361,7 +363,12 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             else:
                 raise NotImplementedError(remasking)
 
-            # mask out tokens beyond the current block
+            # Also compute full-range top confidences before masking to block (for logging)
+            x0_p_full = torch.squeeze(
+                torch.gather(F.softmax(logits, dim=-1), dim=-1, index=torch.unsqueeze(x0, -1)), -1
+            )  # shape: (b, seq_len)
+
+            # mask out tokens beyond the current block (for sampling decision only)
             x0_p[:, prompt.shape[1] + block_end:] = -np.inf
 
             # torch.where(mask, tensor_A, tensor_B): if mask_index is True, use tensor A, otherwise use tensor B
@@ -381,6 +388,40 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                 # for index in select_index:
                 #   transfer_index[j, index] = True
                 transfer_index[j, select_index] = True
+
+            # For logging: split full confidences into decoded-this-step vs remaining-masked
+            gen_start = prompt.shape[1]
+            gen_end = gen_start + gen_length
+            all_conf = x0_p_full[0, gen_start:gen_end]
+
+            # Indices within generation region that will be decoded this step
+            dec_mask_gen = transfer_index[0, gen_start:gen_end]
+            decoded_indices = torch.nonzero(dec_mask_gen, as_tuple=False).flatten()
+
+            # Remaining masked positions this step (currently masked AND not selected to decode now)
+            masked_gen = mask_index[0, gen_start:gen_end]
+            remaining_mask_indices = torch.nonzero(masked_gen & (~dec_mask_gen), as_tuple=False).flatten()
+
+            decoded_conf = [round(float(all_conf[idx]), 4) for idx in decoded_indices]
+            remaining_conf = [round(float(all_conf[idx]), 4) for idx in remaining_mask_indices]
+
+            # Entropy values for decoded vs remaining
+            def _entropy(v: float) -> float:
+                return round(-float(v) * float(np.log(max(v, 1e-12))), 4)
+
+            decoded_entropy = [_entropy(float(all_conf[idx])) for idx in decoded_indices]
+            remaining_entropy = [_entropy(float(all_conf[idx])) for idx in remaining_mask_indices]
+
+            per_step_logs.append({
+                'step': int(total_step),
+                'block': int(num_block),
+                'decoded_pos': decoded_indices.detach().cpu().tolist(),
+                'remaining_pos': remaining_mask_indices.detach().cpu().tolist(),
+                'decoded_conf': decoded_conf,
+                'remaining_conf': remaining_conf,
+                'decoded_entropy': decoded_entropy,
+                'remaining_entropy': remaining_entropy,
+            })
 
             # unmask (freeze) the tokens in x (also using advanced indexing)
             x[transfer_index] = x0[transfer_index]
@@ -410,6 +451,17 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             # print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
 
     print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")
+
+    # Print per-step confidence breakdown at the end
+    if per_step_logs:
+        print(f"\n{'='*60}")
+        print("PER-STEP CONFIDENCE BREAKDOWN (decoded | remaining)")
+        print(f"{'='*60}")
+        for log in per_step_logs:
+            print(f"step {log['step']} (block {log['block']}):")
+            print(f"  top confidence: {log['decoded_conf']} {log['remaining_conf']}")
+            print(f"  entropy: {log['decoded_entropy']} {log['remaining_entropy']}")
+        print(f"{'='*60}")
 
     return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences
 
