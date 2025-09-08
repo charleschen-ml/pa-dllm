@@ -18,14 +18,23 @@ os.environ["HF_DATASETS_CACHE"] = "./cache/datasets"
 
 # log in to hf to use gated models
 from huggingface_hub import login
-# HUGGINGFACE_TOKEN = "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" # read
-HUGGINGFACE_TOKEN = "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" # write
-login(token=HUGGINGFACE_TOKEN)
+import os
+
+# Get token from environment variable (safer)
+HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
+if HUGGINGFACE_TOKEN:
+    login(token=HUGGINGFACE_TOKEN)
+else:
+    print("Warning: HUGGINGFACE_TOKEN not set. Set it with: export HUGGINGFACE_TOKEN=your_token_here")
+    print("Get your token from: https://huggingface.co/settings/tokens")
 
 # log in to wandb
-import os
-os.environ["WANDB_API_KEY"] = "9fc1866aae84e18298ea6bf1d417a104d21e6168"
-os.environ["WANDB_MODE"] = "online"
+WANDB_API_KEY = os.getenv("WANDB_API_KEY")
+if WANDB_API_KEY:
+    os.environ["WANDB_API_KEY"] = WANDB_API_KEY
+    os.environ["WANDB_MODE"] = "online"
+else:
+    print("Warning: WANDB_API_KEY not set. Set it with: export WANDB_API_KEY=your_key_here")
 # !wandb login --relogin
 
 """Packages"""
