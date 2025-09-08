@@ -40,10 +40,10 @@ from transformers import AutoTokenizer, AutoModel
 # Custom arguments for inference-specific parameters
 class InferenceArguments:
     def __init__(self, 
-                 eval_json_path="/content/drive/MyDrive/Colab_Notebooks/eic_llm/eval_set.json",
-                 adapter_path="/content/drive/MyDrive/Colab_Notebooks/gpt2-qat",
-                 output_csv_path="/content/drive/MyDrive/Colab_Notebooks/eic_llm/inference_output.csv",
-                 bitwise_lora_adapter_path="/content/drive/MyDrive/Colab_Notebooks/gpt2-qat/full_qat_model.pt",
+                eval_json_path="./data/eval_set.json",
+                adapter_path="./data/gpt2-qat",
+                output_csv_path="./data/inference_output.csv",
+                bitwise_lora_adapter_path="./data/full_qat_model.pt",
                  use_quantization=True,
                  use_bitwise_lora=True,
                  bit_choices="32",
@@ -92,7 +92,7 @@ def load_gsm8k(n=100):
     df["answer_numerical"] = df["answer"].apply(extract_numerical)
 
     # Save to CSV
-    output_path = "/content/drive/MyDrive/Colab_Notebooks/pa-dllm/gsm8k.csv"
+    output_path = "./data/gsm8k.csv"
     df.to_csv(output_path, index=False)
 
     print(f"Saved {len(df)} examples to {output_path}")
@@ -107,16 +107,16 @@ def make_parser(subparsers: argparse._SubParsersAction = None):
     
     # Add inference-specific arguments
     parser.add_argument("--eval_json_path", type=str, 
-                       default="/content/drive/MyDrive/Colab_Notebooks/eic_llm/eval_set.json",
+                       default="./data/eval_set.json",
                        help="Path to evaluation JSON file")
-    parser.add_argument("--adapter_path", type=str, 
-                       default="/content/drive/MyDrive/Colab_Notebooks/gpt2-qat",
+    parser.add_argument("--adapter_path", type=str,
+                       default="./data/gpt2-qat",
                        help="Path to adapter directory")
-    parser.add_argument("--output_csv_path", type=str, 
-                       default="/content/drive/MyDrive/Colab_Notebooks/eic_llm/inference_output.csv",
+    parser.add_argument("--output_csv_path", type=str,
+                       default="./data/inference_output.csv",
                        help="Path to save inference output CSV")
-    parser.add_argument("--bitwise_lora_adapter_path", type=str, 
-                       default="/content/drive/MyDrive/Colab_Notebooks/gpt2-qat/full_qat_model.pt",
+    parser.add_argument("--bitwise_lora_adapter_path", type=str,
+                       default="./data/full_qat_model.pt",
                        help="Path to bitwise LoRA adapter file")
     parser.add_argument("--use_quantization", action="store_true", default=True,
                        help="Whether to apply quantization")
