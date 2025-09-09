@@ -472,8 +472,29 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
             )
             first_correct_steps.append(first_correct_step)
 
+            # Early exit: if no correct answer was ever found (inf), keep last good size and skip remaining sweeps
+            if first_correct_step == float('inf'):
+                if best_value is not None:
+                    print(f"Found inf at position {position}, sweep_value {sweep_value}. Keeping last good size {best_value} and skipping remaining sweeps for this position.")
+                    # best_step/best_value/optimal_* were already set when the good size was found
+                else:
+                    # No prior good result; record current outputs and exit
+                    try:
+                        optimal_output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+                    except Exception:
+                        optimal_output_text = None
+                    optimal_block_confidences = block_confidences.copy() if isinstance(block_confidences, dict) else block_confidences
+                    optimal_block_sizes = block_sizes.copy()
+                    best_step = first_correct_step
+                    best_value = sweep_value
+                    print(f"Found inf at position {position}, no prior good size. Skipping remaining sweeps for this position.")
+                break
+
             # Track best value for current position
-            if first_correct_step < best_step:
+            # Prefer smaller first_correct_step; on ties, prefer larger sweep_value
+            if (first_correct_step < best_step) or (
+                first_correct_step == best_step and (best_value is None or sweep_value > best_value)
+            ):
                 best_step = first_correct_step
                 best_value = sweep_value
                 optimal_block_sizes = block_sizes.copy()
