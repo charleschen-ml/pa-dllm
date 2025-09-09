@@ -18,7 +18,7 @@ importlib = __import__('importlib')
 importlib.reload(inference)
 
 # Load inference functions
-from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference
+from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference, generate_one_sample
 
 # FASTEST: Load model weights and recreate architecture
 print("Loading saved model (fast method)...")
@@ -117,5 +117,8 @@ question = "Lily can run 12 kilometers per hour for 4 hours. After that, she run
 prompt = instr + question
 
 # Run greedy inference
-run_greedy_inference(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=1, steps=16)
+# run_greedy_inference(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=1, steps=16)
+
+# Generate one sample
+generate_one_sample(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=1, steps=16)
 

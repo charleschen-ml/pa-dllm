@@ -565,6 +565,150 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
 
     return
 
+# Generate one sample for SFT dataset
+def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
+    """Run a single prompt without reloading the model.
+    Pass model_args.use_cache=False for LLaDA/MDM-style models.
+    """
+
+    # Add special tokens for the Instruct model (not required for base model)
+    m = [{"role": "user", "content": prompt}, ]
+    prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+
+    input_ids = tokenizer(prompt)['input_ids']
+
+    input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
+
+    # debug
+    inputs_decoded = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+    print(f"decoded inputs=\n{inputs_decoded}")
+
+    # custom generate with block size as list
+    first_correct_steps = []
+    optimal_block_sizes = None
+    optimal_output_text = None
+    optimal_block_confidences = None
+    min_step = float('inf')
+    
+    # Initialize manual_settings
+    manual_settings = {}
+    
+    # Single token greedy search: optimize only the first position
+    num_blocks = gen_length // base_block_length
+    position = 0  # Only optimize the first position
+    print(f"\n=== Optimizing position {position} (single token search) ===")
+    best_value = None
+    best_step = float('inf')
+    
+    for sweep_value in range(1, gen_length + 1):  # Try values 1 to gen_length
+        current_settings = manual_settings.copy()
+        current_settings[position] = sweep_value
+        
+        block_sizes = calculate_block_sizes(
+            gen_length=gen_length, 
+            base_block_length=base_block_length, 
+            manual_settings=current_settings,
+        )
+        
+        if block_sizes is None:
+            continue
+            
+        print(f"Testing position {position} = {sweep_value}")
+        
+        out, first_correct_step, block_confidences = generate_custom(
+            model, 
+            tokenizer, # charles added
+            input_ids,
+            steps=steps,
+            gen_length=gen_length,
+            block_sizes=block_sizes,
+            temperature=0.,
+            cfg_scale=0.,
+            remasking='low_confidence'
+        )
+        first_correct_steps.append(first_correct_step)
+
+        # Early exit: if no correct answer was ever found (inf), keep last good size and skip remaining sweeps
+        if first_correct_step == float('inf'):
+            if best_value is not None:
+                print(f"Found inf at position {position}, sweep_value {sweep_value}. Keeping last good size {best_value} and stopping search.")
+                # best_step/best_value/optimal_* were already set when the good size was found
+            else:
+                # No prior good result; record current outputs and exit
+                try:
+                    optimal_output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+                except Exception:
+                    optimal_output_text = None
+                optimal_block_confidences = block_confidences.copy() if isinstance(block_confidences, dict) else block_confidences
+                optimal_block_sizes = block_sizes.copy()
+                best_step = first_correct_step
+                best_value = sweep_value
+                print(f"Found inf at position {position}, no prior good size. Stopping search.")
+            break
+
+        # Track best value for current position
+        # Prefer smaller first_correct_step; on ties, prefer larger sweep_value
+        if (first_correct_step < best_step) or (
+            first_correct_step == best_step and (best_value is None or sweep_value > best_value)
+        ):
+            best_step = first_correct_step
+            best_value = sweep_value
+            optimal_block_sizes = block_sizes.copy()
+            # Store the output text and confidences for the best configuration
+            optimal_output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+            optimal_block_confidences = block_confidences.copy()
+    
+    # Update manual_settings with the best value found for this position
+    if best_value is not None:
+        manual_settings[position] = best_value
+        print(f"Best value for position {position}: {best_value} (step: {best_step})")
+    else:
+        print(f"No valid configuration found for position {position}")
+    
+    # Set global minimum to the best step found
+    min_step = best_step
+    
+    # Print the list of first_correct_steps and find the minimum
+    print(f"\nFirst correct steps: {first_correct_steps}")
+    print(f"Minimum first correct step: {min_step}")
+    print(f"Optimal block sizes: {optimal_block_sizes}")
+    print(f"\nOptimal output text:")
+    print(optimal_output_text)
+    
+    # Show detailed confidence tracking for the optimal configuration
+    if optimal_block_sizes is not None:
+        print(f"\n{'='*60}")
+        print("DETAILED CONFIDENCE TRACKING")
+        print(f"{'='*60}")
+
+        # Generate the optimal configuration one more time to get the block breakdown
+        optimal_settings = {}
+        for i, size in enumerate(optimal_block_sizes):
+            if size > 0:
+                optimal_settings[i] = size
+
+        final_block_sizes = calculate_block_sizes(
+            gen_length=gen_length,
+            base_block_length=base_block_length,
+            manual_settings=optimal_settings,
+        )
+
+        if final_block_sizes is not None:
+            # First, run generate_custom to get the final result and confidences
+            out, _, final_confidences = generate_custom(
+                model,
+                tokenizer,
+                input_ids,
+                steps=steps,
+                gen_length=gen_length,
+                block_sizes=final_block_sizes,
+                temperature=0.,
+                cfg_scale=0.,
+                remasking='low_confidence'
+            )
+
+    return
+
 def main(script_args, model_args, inference_args):
     """
     Args:
