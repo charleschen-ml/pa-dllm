@@ -280,7 +280,7 @@ def load_model(model_args):
     print(f"✅ Loaded model: {model_args.model_name_or_path} on {device}")
     return model, tokenizer, device
 
-# Run original inference
+# Run single inference
 def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
@@ -313,8 +313,8 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
         remasking='low_confidence'
     )
 
-    # out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
-    # print("\n" + out_text)
+    out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+    print("\n" + out_text)
     # print(f"Answer correct? {extract_boxed(out_text) == 72}")
 
     # debug
@@ -323,7 +323,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     # outputs_decoded = tokenizer.decode(outputs_ids, skip_special_tokens=False)
     # print(f"decoded output=\n{outputs_decoded}")
 
-    return
+    return out # so we can go token by token
 
 def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, output_csv_path,
                         steps=16, gen_length=32, block_length=2):
@@ -459,7 +459,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
                 
             print(f"Testing position {position} = {sweep_value}")
             
-            out, first_correct_step, block_confidences = generate_custom(
+            out, first_correct_step, block_confidences, initial_entropy, initial_confidence = generate_custom(
                 model, 
                 tokenizer, # charles added
                 input_ids,
@@ -540,7 +540,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
 
         if final_block_sizes is not None:
             # First, run generate_custom to get the final result and confidences
-            out, _, final_confidences = generate_custom(
+            out, _, final_confidences, _, _ = generate_custom(
                 model,
                 tokenizer,
                 input_ids,
@@ -566,7 +566,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
     return
 
 # Generate one sample for SFT dataset
-def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
+def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     """
@@ -615,7 +615,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             
         print(f"Testing position {position} = {sweep_value}")
         
-        out, first_correct_step, block_confidences = generate_custom(
+        out, first_correct_step, block_confidences, initial_entropy, initial_confidence = generate_custom(
             model, 
             tokenizer, # charles added
             input_ids,
@@ -695,7 +695,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 
         if final_block_sizes is not None:
             # First, run generate_custom to get the final result and confidences
-            out, _, final_confidences = generate_custom(
+            out, _, final_confidences, _, _ = generate_custom(
                 model,
                 tokenizer,
                 input_ids,
@@ -707,7 +707,152 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
                 remasking='low_confidence'
             )
 
-    return
+    # store the input-ouput pair in this format (e.g. curr_pos=4):
+    # {
+    #     "features": [
+    #         [0.72, 0.63, 5], # [confidence, entropy, position] for token 5
+    #         [0.65, 0.80, 6], # [confidence, entropy, position] for token 6
+    #         [0.55, 0.92, 7] # [confidence, entropy, position] for token 7
+    #         ...
+    #         [0.55, 0.92, 10] # [confidence, entropy, position] for last token
+    #     ],
+    #     "block_size": 2  # supervised label
+    # }
+    
+    # Extract features for all remaining tokens from curr_pos to gen_length
+    features = []
+    if initial_confidence is not None and initial_entropy is not None:
+        for position in range(curr_pos + 1, gen_length + 1):
+            # Get confidence and entropy from initial values (index is position - 1 since it's 0-indexed)
+            idx = position - 1
+            if idx < len(initial_confidence) and idx < len(initial_entropy):
+                confidence = initial_confidence[idx]
+                entropy = initial_entropy[idx]
+                features.append([confidence, entropy, position])
+            else:
+                features.append([0.0, 0.0, position])
+    
+    # Create training sample
+    training_sample = {
+        "features": features,
+        "block_size": best_value if best_value is not None else 1
+    }
+    
+    print(f"\nTraining sample for curr_pos={curr_pos}:")
+    print(f"Features: {features}")
+    print(f"Block size: {training_sample['block_size']}")
+
+    return training_sample
+
+def generate_one_sample_at_curr_pos(model, tokenizer, device, prompt_text, model_args,
+                                    gen_length=32, base_block_length=2, steps=16, curr_pos=0):
+    """
+    At a given curr_pos, prefill first `curr_pos` tokens and greedy sweep block sizes for best result.
+    Works for curr_pos = 0 as a drop-in replacement.
+    """
+
+    # Format prompt and tokenize
+    messages = [{"role": "user", "content": prompt_text}]
+    prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    prompt_ids = tokenizer(prompt)["input_ids"]
+    prompt_tensor = torch.tensor(prompt_ids, device=device).unsqueeze(0)
+
+    # === Step 1: Generate full output once to get decoded tokens ===
+    with torch.no_grad():
+        out_full = generate_vanilla(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt_tensor,
+            steps=steps,
+            gen_length=gen_length,
+            block_length=base_block_length,
+            temperature=0.0,
+            cfg_scale=0.0,
+            remasking="low_confidence"
+        )
+
+    full_gen_tokens = out_full[:, prompt_tensor.shape[1]:]  # shape: (1, gen_length)
+    prefix_decoded = full_gen_tokens[:, :curr_pos]          # shape: (1, curr_pos)
+
+    # === Step 2: Construct input with partial prefix ===
+    mask_token_id = 126336
+    x = torch.full((1, prompt_tensor.shape[1] + gen_length), mask_token_id, dtype=torch.long).to(device)
+    x[:, :prompt_tensor.shape[1]] = prompt_tensor
+    x[:, prompt_tensor.shape[1]:prompt_tensor.shape[1] + curr_pos] = prefix_decoded
+    input_tensor = x.clone()
+
+    # Decode and print current prompt+prefix
+    curr_prompt_text = tokenizer.batch_decode(
+        input_tensor[:, :prompt_tensor.shape[1] + curr_pos], skip_special_tokens=True
+    )[0]
+    print(f"\n[Prompt at curr_pos={curr_pos}]:\n{curr_prompt_text}")
+
+    # === Step 3: Greedy search for best block size ===
+    best_value = None
+    best_step = float('inf')
+    optimal_conf = None
+    optimal_entropy = None
+
+    for sweep_value in range(1, gen_length + 1):
+        manual_settings = {0: sweep_value}
+        block_sizes = calculate_block_sizes(
+            gen_length=gen_length,
+            base_block_length=base_block_length,
+            manual_settings=manual_settings,
+        )
+        if block_sizes is None:
+            continue
+
+        # Skip if current position is already beyond the first block
+        if curr_pos >= sum(block_sizes[:1]):
+            continue
+
+        out, first_correct_step, _, initial_entropy, initial_confidence = generate_custom(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt_tensor,
+            steps=steps,
+            gen_length=gen_length,
+            block_sizes=block_sizes,
+            temperature=0.0,
+            cfg_scale=0.0,
+            remasking="low_confidence"
+        )
+
+        if (first_correct_step < best_step) or (
+            first_correct_step == best_step and (best_value is None or sweep_value > best_value)
+        ):
+            best_step = first_correct_step
+            best_value = sweep_value
+            optimal_conf = initial_confidence
+            optimal_entropy = initial_entropy
+
+        if first_correct_step == float('inf') and best_value is not None:
+            break
+
+    # === Step 4: Extract features from curr_pos+1 onward ===
+    features = []
+    for pos in range(curr_pos + 1, gen_length + 1):
+        idx = pos - 1
+        if optimal_conf is not None and optimal_entropy is not None:
+            if idx < len(optimal_conf) and idx < len(optimal_entropy):
+                conf = optimal_conf[idx]
+                ent = optimal_entropy[idx]
+                features.append([conf, ent, pos])
+            else:
+                features.append([0.0, 0.0, pos])
+        else:
+            features.append([0.0, 0.0, pos])
+
+    # === Logging for debug ===
+    print(f"\nTraining sample for curr_pos={curr_pos}:")
+    print(f"Features: {features}")
+    print(f"Block size: {best_value if best_value is not None else 1}")
+
+    return {
+        "features": features,
+        "block_size": best_value if best_value is not None else 1
+    }
 
 def main(script_args, model_args, inference_args):
     """

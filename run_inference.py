@@ -19,6 +19,8 @@ importlib.reload(inference)
 
 # Load inference functions
 from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference, generate_one_sample
+from inference import generate_one_sample_at_curr_pos
+from generate import generate_vanilla, generate_custom
 
 # FASTEST: Load model weights and recreate architecture
 print("Loading saved model (fast method)...")
@@ -116,9 +118,51 @@ instr = "Solve this problem and box your final answer:\n"
 question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?"
 prompt = instr + question
 
+########################################################
 # Run greedy inference
+########################################################
 # run_greedy_inference(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=1, steps=16)
 
+########################################################
 # Generate one sample
-generate_one_sample(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=1, steps=16)
+########################################################
+# training_sample = generate_one_sample(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=1, steps=16, curr_pos=0)
+# print(f"training_sample=\n{training_sample}")
+
+########################################################
+# Generate training samples for different positions
+########################################################
+import json
+
+# Params
+# prompt_text = "Solve this problem and box your final answer:\nLily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?"
+gen_length = 16
+base_block_length = 1
+steps = 16
+
+# Collect training samples
+training_samples = []
+for curr_pos in range(gen_length):
+    print(f"\n=== curr_pos = {curr_pos} ===")
+    sample = generate_one_sample_at_curr_pos(
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        prompt_text=prompt,
+        model_args=model_args,
+        gen_length=gen_length,
+        base_block_length=base_block_length,
+        steps=steps,
+        curr_pos=curr_pos
+    )
+    if sample:
+        training_samples.append(sample)
+
+# Save to file
+import json
+output_path = "./data/sft_training_samples_greedy.json"
+with open(output_path, "w") as f:
+    json.dump(training_samples, f, indent=2)
+
+print(f"\n✅ Done. Saved {len(training_samples)} samples to {output_path}")
 

@@ -315,6 +315,33 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     block_confidences = {}  # Track confidence for each block
     # Track per-step confidences (decoded vs remaining) to print at the end
     per_step_logs = []
+    
+    # Capture initial entropy and confidence before any decoding
+    initial_entropy = None
+    initial_confidence = None
+    if cfg_scale > 0.:
+        un_x = x.clone()
+        un_x[prompt_index] = mask_id
+        x_ = torch.cat([x, un_x], dim=0)
+        logits = model(x_).logits
+        logits, un_logits = torch.chunk(logits, 2, dim=0)
+        logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+    else:
+        logits = model(x).logits
+    
+    # Calculate initial confidence and entropy for all masked positions
+    p = F.softmax(logits, dim=-1)
+    gen_start = prompt.shape[1]
+    gen_end = gen_start + gen_length
+    initial_conf = torch.squeeze(
+        torch.gather(p, dim=-1, index=torch.unsqueeze(torch.argmax(logits, dim=-1), -1)), -1
+    )[0, gen_start:gen_end]
+    
+    def _entropy(v: float) -> float:
+        return round(-float(v) * float(np.log(max(v, 1e-12))), 4)
+    
+    initial_confidence = [round(float(initial_conf[i]), 4) for i in range(gen_length)]
+    initial_entropy = [_entropy(float(initial_conf[i])) for i in range(gen_length)]
 
     # Calculate cumulative block positions
     block_starts = [0] + [sum(block_sizes[:i]) for i in range(1, len(block_sizes))]
@@ -463,7 +490,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             print(f"  entropy: {log['decoded_entropy']} {log['remaining_entropy']}")
         print(f"{'='*60}")
 
-    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences
+    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence
 
 def main():
     device = 'cuda'
