@@ -286,11 +286,12 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     """
 
-    print(f"prompt=\n{prompt}")
+    print(f"raw prompt=\n{prompt}")
 
     # Add special tokens for the Instruct model (not required for base model)
     m = [{"role": "user", "content": prompt}, ]
     prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+    prompt = prompt + "Lily can run \\boxed"
 
     input_ids = tokenizer(prompt)['input_ids']
 
@@ -298,23 +299,34 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
 
     # debug
     inputs_decoded = tokenizer.decode(input_ids[0], skip_special_tokens=True)
-    # print(f"decoded inputs=\n{inputs_decoded}")
+    print(f"templated prompt=\n{inputs_decoded}")
 
     # original llada generate()
     out = generate_vanilla(
         model, 
         tokenizer, # charles added
         input_ids, 
-        steps=16, 
-        gen_length=32, 
-        block_length=2, 
+        steps=steps, 
+        gen_length=gen_length, 
+        block_length=base_block_length, 
         temperature=0., 
         cfg_scale=0., 
         remasking='low_confidence'
     )
 
+    # debug: print raw decoded output
+    print(f"raw output=\n{out[0]}")
+    raw_decoded_output = tokenizer.batch_decode(out, skip_special_tokens=True)[0]
+    print(f"raw decoded output=\n{raw_decoded_output}")
+
+    # debug: print token_id: token mapping for the full output
+    print(f"\nFull token breakdown:")
+    for i, token_id in enumerate(out[0]):
+        token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+        print(f"{token_id.item()}: '{token_text}'")
+
     out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
-    print("\n" + out_text)
+    print(f"out_text=\n{out_text}")
     # print(f"Answer correct? {extract_boxed(out_text) == 72}")
 
     # debug
@@ -754,6 +766,9 @@ def generate_one_sample_at_curr_pos(model, tokenizer, device, prompt_text, model
     # Format prompt and tokenize
     messages = [{"role": "user", "content": prompt_text}]
     prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    
+    # prompt = "<|user|>\n" + prompt_text.strip() + "\n<|assistant|>\n"
+
     prompt_ids = tokenizer(prompt)["input_ids"]
     prompt_tensor = torch.tensor(prompt_ids, device=device).unsqueeze(0)
 
@@ -780,12 +795,52 @@ def generate_one_sample_at_curr_pos(model, tokenizer, device, prompt_text, model
     x[:, :prompt_tensor.shape[1]] = prompt_tensor
     x[:, prompt_tensor.shape[1]:prompt_tensor.shape[1] + curr_pos] = prefix_decoded
     input_tensor = x.clone()
+    
+    # Debug: Show the masking setup
+    print(f"\n=== MASKING DEBUG ===")
+    print(f"prompt_tensor.shape[1]: {prompt_tensor.shape[1]}")
+    print(f"curr_pos: {curr_pos}")
+    print(f"gen_length: {gen_length}")
+    print(f"mask_token_id: {mask_token_id}")
+    
+    # Show which positions are masked vs unmasked
+    print(f"Input tensor breakdown BEFORE generation:")
+    for i in range(min(prompt_tensor.shape[1] + curr_pos + 5, input_tensor.shape[1])):  # Show first few positions
+        token_id = input_tensor[0, i].item()
+        if token_id == mask_token_id:
+            print(f"  pos {i}: {token_id} [MASKED]")
+        else:
+            token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+            if i < prompt_tensor.shape[1]:
+                print(f"  pos {i}: {token_id}: '{token_text}' [PROMPT]")
+            else:
+                print(f"  pos {i}: {token_id}: '{token_text}' [PREFILLED]")
+    
+    # Show mask pattern
+    mask_positions = (input_tensor[0] == mask_token_id).nonzero(as_tuple=True)[0]
+    print(f"Masked positions: {mask_positions[:10].tolist()}...")  # Show first 10 masked positions
+    print(f"=== END MASKING DEBUG ===\n")
 
     # Decode and print current prompt+prefix
     curr_prompt_text = tokenizer.batch_decode(
         input_tensor[:, :prompt_tensor.shape[1] + curr_pos], skip_special_tokens=True
     )[0]
     print(f"\n[Prompt at curr_pos={curr_pos}]:\n{curr_prompt_text}")
+    
+    # Debug: Show the token added at curr_pos
+    if curr_pos > 0:
+        token_at_curr_pos = prefix_decoded[0, curr_pos - 1].item()  # Get the last token added
+        token_text = tokenizer.decode([token_at_curr_pos], skip_special_tokens=False)
+        print(f"Token added at position {curr_pos - 1}: {token_at_curr_pos}: '{token_text}'")
+    
+    # Debug: Show all prefix tokens so far
+    if curr_pos > 0:
+        print(f"All prefix tokens (0 to {curr_pos-1}):")
+        for i in range(curr_pos):
+            token_id = prefix_decoded[0, i].item()
+            token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+            print(f"  pos {i}: {token_id}: '{token_text}'")
+    
 
     # === Step 3: Greedy search for best block size ===
     best_value = None
@@ -818,6 +873,37 @@ def generate_one_sample_at_curr_pos(model, tokenizer, device, prompt_text, model
             cfg_scale=0.0,
             remasking="low_confidence"
         )
+
+        # debug: print raw decoded output
+        raw_decoded_output = tokenizer.batch_decode(out, skip_special_tokens=True)[0]
+        print(f"raw decoded output=\n{raw_decoded_output}")
+        
+        # debug: print output tokens only (generated part)
+        output_tokens = out[:, prompt_tensor.shape[1]:]  # Get just the generated part
+        print(f"Generated tokens breakdown:")
+        for i, token_id in enumerate(output_tokens[0]):
+            token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+            print(f"  {i}: {token_id.item()}: '{token_text}'")
+        
+        # Debug: Compare input vs output to see what changed
+        print(f"\n=== BEFORE vs AFTER GENERATION ===")
+        print(f"Comparing first {curr_pos + 5} positions:")
+        for i in range(min(curr_pos + 5, output_tokens.shape[1])):
+            input_pos = prompt_tensor.shape[1] + i
+            if i < curr_pos:
+                # This should be prefilled (unchanged)
+                input_token = input_tensor[0, input_pos].item()
+                output_token = out[0, input_pos].item()
+                input_text = tokenizer.decode([input_token], skip_special_tokens=False)
+                output_text = tokenizer.decode([output_token], skip_special_tokens=False)
+                status = "CHANGED!" if input_token != output_token else "unchanged"
+                print(f"  pos {i}: {input_token}:'{input_text}' → {output_token}:'{output_text}' [{status}]")
+            else:
+                # This should be newly generated
+                output_token = out[0, input_pos].item()
+                output_text = tokenizer.decode([output_token], skip_special_tokens=False)
+                print(f"  pos {i}: MASKED → {output_token}:'{output_text}' [generated]")
+        print(f"=== END COMPARISON ===\n")
 
         if (first_correct_step < best_step) or (
             first_correct_step == best_step and (best_value is None or sweep_value > best_value)

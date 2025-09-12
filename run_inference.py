@@ -115,8 +115,13 @@ if torch.cuda.is_available():
 
 # Load single prompt
 instr = "Solve this problem and box your final answer:\n"
-question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?"
+question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?\n"
 prompt = instr + question
+
+########################################################
+# Run single inference
+########################################################
+# run_inference(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=1, steps=32)
 
 ########################################################
 # Run greedy inference
