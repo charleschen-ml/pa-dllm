@@ -759,113 +759,62 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 def generate_one_sample_at_curr_pos(model, tokenizer, device, prompt_text, model_args,
                                     gen_length=32, base_block_length=2, steps=16, curr_pos=0):
     """
-    At a given curr_pos, prefill first `curr_pos` tokens and greedy sweep block sizes for best result.
-    Works for curr_pos = 0 as a drop-in replacement.
+    At a given curr_pos, autoregressively generate the first `curr_pos` tokens (from scratch),
+    logging confidence/entropy per step. Then find the best block size starting at curr_pos.
+    Returns: {"features": [...], "block_size": best_value}
     """
+    from torch.nn.functional import softmax
 
-    # Format prompt and tokenize
+    # Step 1: Apply chat template and tokenize base prompt
     messages = [{"role": "user", "content": prompt_text}]
     prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-    
-    # prompt = "<|user|>\n" + prompt_text.strip() + "\n<|assistant|>\n"
+    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
 
-    prompt_ids = tokenizer(prompt)["input_ids"]
-    prompt_tensor = torch.tensor(prompt_ids, device=device).unsqueeze(0)
+    # Step 2: Autoregressively decode first `curr_pos` tokens, logging conf/entropy
+    generated = input_ids.clone()
+    features = []
 
-    # === Step 1: Generate full output once to get decoded tokens ===
     with torch.no_grad():
-        out_full = generate_vanilla(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=prompt_tensor,
-            steps=steps,
-            gen_length=gen_length,
-            block_length=base_block_length,
-            temperature=0.0,
-            cfg_scale=0.0,
-            remasking="low_confidence"
-        )
-
-    full_gen_tokens = out_full[:, prompt_tensor.shape[1]:]  # shape: (1, gen_length)
-    prefix_decoded = full_gen_tokens[:, :curr_pos]          # shape: (1, curr_pos)
-
-    # === Step 2: Construct input with partial prefix ===
-    mask_token_id = 126336
-    x = torch.full((1, prompt_tensor.shape[1] + gen_length), mask_token_id, dtype=torch.long).to(device)
-    x[:, :prompt_tensor.shape[1]] = prompt_tensor
-    x[:, prompt_tensor.shape[1]:prompt_tensor.shape[1] + curr_pos] = prefix_decoded
-    input_tensor = x.clone()
-    
-    # Debug: Show the masking setup
-    print(f"\n=== MASKING DEBUG ===")
-    print(f"prompt_tensor.shape[1]: {prompt_tensor.shape[1]}")
-    print(f"curr_pos: {curr_pos}")
-    print(f"gen_length: {gen_length}")
-    print(f"mask_token_id: {mask_token_id}")
-    
-    # Show which positions are masked vs unmasked
-    print(f"Input tensor breakdown BEFORE generation:")
-    for i in range(min(prompt_tensor.shape[1] + curr_pos + 5, input_tensor.shape[1])):  # Show first few positions
-        token_id = input_tensor[0, i].item()
-        if token_id == mask_token_id:
-            print(f"  pos {i}: {token_id} [MASKED]")
-        else:
-            token_text = tokenizer.decode([token_id], skip_special_tokens=False)
-            if i < prompt_tensor.shape[1]:
-                print(f"  pos {i}: {token_id}: '{token_text}' [PROMPT]")
-            else:
-                print(f"  pos {i}: {token_id}: '{token_text}' [PREFILLED]")
-    
-    # Show mask pattern
-    mask_positions = (input_tensor[0] == mask_token_id).nonzero(as_tuple=True)[0]
-    print(f"Masked positions: {mask_positions[:10].tolist()}...")  # Show first 10 masked positions
-    print(f"=== END MASKING DEBUG ===\n")
-
-    # Decode and print current prompt+prefix
-    curr_prompt_text = tokenizer.batch_decode(
-        input_tensor[:, :prompt_tensor.shape[1] + curr_pos], skip_special_tokens=True
-    )[0]
-    print(f"\n[Prompt at curr_pos={curr_pos}]:\n{curr_prompt_text}")
-    
-    # Debug: Show the token added at curr_pos
-    if curr_pos > 0:
-        token_at_curr_pos = prefix_decoded[0, curr_pos - 1].item()  # Get the last token added
-        token_text = tokenizer.decode([token_at_curr_pos], skip_special_tokens=False)
-        print(f"Token added at position {curr_pos - 1}: {token_at_curr_pos}: '{token_text}'")
-    
-    # Debug: Show all prefix tokens so far
-    if curr_pos > 0:
-        print(f"All prefix tokens (0 to {curr_pos-1}):")
         for i in range(curr_pos):
-            token_id = prefix_decoded[0, i].item()
-            token_text = tokenizer.decode([token_id], skip_special_tokens=False)
-            print(f"  pos {i}: {token_id}: '{token_text}'")
-    
+            outputs = model(generated)
+            logits = outputs.logits[:, -1, :]
+            probs = softmax(logits, dim=-1)
 
-    # === Step 3: Greedy search for best block size ===
+            entropy = -(probs * probs.log()).sum().item()
+            next_token = torch.argmax(probs, dim=-1)
+            confidence = probs[0, next_token].item()
+
+            features.append([confidence, entropy, i + 1])
+
+            # expand dims and append
+            next_token = next_token.unsqueeze(0) if next_token.ndim == 1 else next_token
+            generated = torch.cat([generated, next_token], dim=1)
+
+    # Optional: print what the model has generated so far
+    print(f"\n===== CURR_POS = {curr_pos} | PREFIX GENERATED =====")
+    print(tokenizer.decode(generated[0], skip_special_tokens=False))
+
+    # Step 3: Sweep block sizes starting at `curr_pos` to find best block size
     best_value = None
     best_step = float('inf')
-    optimal_conf = None
-    optimal_entropy = None
 
     for sweep_value in range(1, gen_length + 1):
-        manual_settings = {0: sweep_value}
-        block_sizes = calculate_block_sizes(
-            gen_length=gen_length,
-            base_block_length=base_block_length,
-            manual_settings=manual_settings,
-        )
+        manual_settings = {curr_pos // base_block_length: sweep_value}
+        try:
+            block_sizes = calculate_block_sizes(
+                gen_length=gen_length,
+                base_block_length=base_block_length,
+                manual_settings=manual_settings
+            )
+        except:
+            continue
         if block_sizes is None:
             continue
 
-        # Skip if current position is already beyond the first block
-        if curr_pos >= sum(block_sizes[:1]):
-            continue
-
-        out, first_correct_step, _, initial_entropy, initial_confidence = generate_custom(
+        out, first_correct_step, _, _, _ = generate_custom(
             model=model,
             tokenizer=tokenizer,
-            prompt=prompt_tensor,
+            prompt=generated,
             steps=steps,
             gen_length=gen_length,
             block_sizes=block_sizes,
@@ -874,70 +823,31 @@ def generate_one_sample_at_curr_pos(model, tokenizer, device, prompt_text, model
             remasking="low_confidence"
         )
 
-        # debug: print raw decoded output
-        raw_decoded_output = tokenizer.batch_decode(out, skip_special_tokens=True)[0]
-        print(f"raw decoded output=\n{raw_decoded_output}")
-        
-        # debug: print output tokens only (generated part)
-        output_tokens = out[:, prompt_tensor.shape[1]:]  # Get just the generated part
-        print(f"Generated tokens breakdown:")
-        for i, token_id in enumerate(output_tokens[0]):
-            token_text = tokenizer.decode([token_id], skip_special_tokens=False)
-            print(f"  {i}: {token_id.item()}: '{token_text}'")
-        
-        # Debug: Compare input vs output to see what changed
-        print(f"\n=== BEFORE vs AFTER GENERATION ===")
-        print(f"Comparing first {curr_pos + 5} positions:")
-        for i in range(min(curr_pos + 5, output_tokens.shape[1])):
-            input_pos = prompt_tensor.shape[1] + i
-            if i < curr_pos:
-                # This should be prefilled (unchanged)
-                input_token = input_tensor[0, input_pos].item()
-                output_token = out[0, input_pos].item()
-                input_text = tokenizer.decode([input_token], skip_special_tokens=False)
-                output_text = tokenizer.decode([output_token], skip_special_tokens=False)
-                status = "CHANGED!" if input_token != output_token else "unchanged"
-                print(f"  pos {i}: {input_token}:'{input_text}' → {output_token}:'{output_text}' [{status}]")
+        # EARLY EXIT ON FAILURE
+        if first_correct_step == float("inf"):
+            print(f"⚠️ Found inf at sweep_value={sweep_value}")
+            if best_value is not None:
+                print(f"✅ Falling back to last good block size: {best_value}")
+                break
             else:
-                # This should be newly generated
-                output_token = out[0, input_pos].item()
-                output_text = tokenizer.decode([output_token], skip_special_tokens=False)
-                print(f"  pos {i}: MASKED → {output_token}:'{output_text}' [generated]")
-        print(f"=== END COMPARISON ===\n")
+                print(f"❌ No valid block size found. Returning dummy sample.")
+                return {"features": features, "block_size": 1}
 
-        if (first_correct_step < best_step) or (
-            first_correct_step == best_step and (best_value is None or sweep_value > best_value)
-        ):
+        if first_correct_step < best_step:
             best_step = first_correct_step
             best_value = sweep_value
-            optimal_conf = initial_confidence
-            optimal_entropy = initial_entropy
 
-        if first_correct_step == float('inf') and best_value is not None:
-            break
+    # Final check
+    if best_value is None:
+        print(f"❌ No valid block size found at all. Returning dummy sample.")
+        return {"features": features, "block_size": 1}
 
-    # === Step 4: Extract features from curr_pos+1 onward ===
-    features = []
-    for pos in range(curr_pos + 1, gen_length + 1):
-        idx = pos - 1
-        if optimal_conf is not None and optimal_entropy is not None:
-            if idx < len(optimal_conf) and idx < len(optimal_entropy):
-                conf = optimal_conf[idx]
-                ent = optimal_entropy[idx]
-                features.append([conf, ent, pos])
-            else:
-                features.append([0.0, 0.0, pos])
-        else:
-            features.append([0.0, 0.0, pos])
-
-    # === Logging for debug ===
-    print(f"\nTraining sample for curr_pos={curr_pos}:")
-    print(f"Features: {features}")
-    print(f"Block size: {best_value if best_value is not None else 1}")
+    print(f"\n✅ Optimal block_size for curr_pos={curr_pos}: {best_value}")
+    print(f"📊 Feature rows: {len(features)}")
 
     return {
         "features": features,
-        "block_size": best_value if best_value is not None else 1
+        "block_size": best_value
     }
 
 def main(script_args, model_args, inference_args):
