@@ -19,7 +19,6 @@ importlib.reload(inference)
 
 # Load inference functions
 from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference, generate_one_sample
-from inference import generate_one_sample_at_curr_pos
 from generate import generate_vanilla, generate_custom
 
 # FASTEST: Load model weights and recreate architecture

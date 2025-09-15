@@ -645,7 +645,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             block_sizes=block_sizes,
             temperature=0.,
             cfg_scale=0.,
-            remasking='low_confidence'
+            remasking='low_confidence',
+            curr_pos=curr_pos  # Pass curr_pos to capture confidence/entropy at the right block
         )
         first_correct_steps.append(first_correct_step)
 

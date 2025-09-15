@@ -270,7 +270,7 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
 
 @ torch.no_grad()
 def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_sizes=None, temperature=0.,
-                   cfg_scale=0., remasking='low_confidence', mask_id=126336):
+                   cfg_scale=0., remasking='low_confidence', mask_id=126336, curr_pos=0,):
     '''
     Args:
         model: Mask predictor.
@@ -283,6 +283,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
         cfg_scale: Unsupervised classifier-free guidance scale.
         remasking: Remasking strategy. 'low_confidence' or 'random'.
         mask_id: The toke id of [MASK] is 126336.
+        curr_pos: position where we want to save confidence and entropy.
     '''
     # debug
     # print("\nstart generate_custom:\n")
@@ -316,9 +317,10 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     # Track per-step confidences (decoded vs remaining) to print at the end
     per_step_logs = []
     
-    # Capture initial entropy and confidence before any decoding
+    # Initialize confidence and entropy - will be captured at curr_pos block
     initial_entropy = None
     initial_confidence = None
+    
     if cfg_scale > 0.:
         un_x = x.clone()
         un_x[prompt_index] = mask_id
@@ -329,19 +331,8 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     else:
         logits = model(x).logits
     
-    # Calculate initial confidence and entropy for all masked positions
-    p = F.softmax(logits, dim=-1)
-    gen_start = prompt.shape[1]
-    gen_end = gen_start + gen_length
-    initial_conf = torch.squeeze(
-        torch.gather(p, dim=-1, index=torch.unsqueeze(torch.argmax(logits, dim=-1), -1)), -1
-    )[0, gen_start:gen_end]
-    
     def _entropy(v: float) -> float:
         return round(-float(v) * float(np.log(max(v, 1e-12))), 4)
-    
-    initial_confidence = [round(float(initial_conf[i]), 4) for i in range(gen_length)]
-    initial_entropy = [_entropy(float(initial_conf[i])) for i in range(gen_length)]
 
     # Calculate cumulative block positions
     block_starts = [0] + [sum(block_sizes[:i]) for i in range(1, len(block_sizes))]
@@ -354,6 +345,52 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
         # Skip blocks with zero size
         if block_size == 0:
             continue
+            
+        # Log block progression for verification
+        # if num_block <= curr_pos + 1:  # Only log around curr_pos to avoid spam
+        #     print(f"\n🔄 Processing block {num_block} (size: {block_size}, range: {block_start}-{block_end})")
+        #     if num_block == curr_pos:
+        #         print(f"   ⭐ This is the TARGET block (curr_pos={curr_pos}) - will capture confidence/entropy here!")
+
+        # Capture confidence and entropy at curr_pos block (before processing steps)
+        if num_block == curr_pos and initial_confidence is None:
+            print(f"\n🎯 CAPTURING confidence/entropy at block {num_block} (curr_pos={curr_pos})")
+            
+            # Get current logits to calculate confidence/entropy
+            if cfg_scale > 0.:
+                un_x = x.clone()
+                un_x[prompt_index] = mask_id
+                x_ = torch.cat([x, un_x], dim=0)
+                logits = model(x_).logits
+                logits, un_logits = torch.chunk(logits, 2, dim=0)
+                logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+            else:
+                logits = model(x).logits
+            
+            # Show current state of generation
+            current_decoded = tokenizer.decode(x[0, prompt.shape[1]:], skip_special_tokens=True)
+            print(f"📝 Current generation state: '{current_decoded}'")
+            
+            # Count how many tokens are still masked
+            gen_start = prompt.shape[1]
+            gen_end = gen_start + gen_length
+            masked_count = (x[0, gen_start:gen_end] == mask_id).sum().item()
+            decoded_count = gen_length - masked_count
+            print(f"🎭 Tokens decoded so far: {decoded_count}/{gen_length} (masked: {masked_count})")
+            
+            p = F.softmax(logits, dim=-1)
+            initial_conf = torch.squeeze(
+                torch.gather(p, dim=-1, index=torch.unsqueeze(torch.argmax(logits, dim=-1), -1)), -1
+            )[0, gen_start:gen_end]
+            
+            initial_confidence = [round(float(initial_conf[i]), 4) for i in range(gen_length)]
+            initial_entropy = [_entropy(float(initial_conf[i])) for i in range(gen_length)]
+            
+            # Show sample of captured values
+            print(f"📊 Sample confidence values: {initial_confidence[:5]}...")
+            print(f"📈 Sample entropy values: {initial_entropy[:5]}...")
+            print(f"✅ Captured {len(initial_confidence)} confidence/entropy pairs")
+            print("=" * 60)
 
         # initialize boolean mask to all <mask> in current block
         block_mask_index = (x[:, prompt.shape[1] + block_start: prompt.shape[1] + block_end] == mask_id)
