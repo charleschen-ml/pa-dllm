@@ -425,6 +425,7 @@ def calculate_score(df, correct_csv_path="correct_questions.csv"):
 def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
+    Greedy search: optimize each position one by one
     """
 
     # Add special tokens for the Instruct model (not required for base model)
@@ -578,9 +579,13 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
     return
 
 # Generate one sample for SFT dataset
-def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0):
+def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0, manual_settings=None):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
+    
+    Args:
+        manual_settings: Dict of {block_position: block_size_value} for manual block size settings.
+                        If None, starts with empty dict (all blocks use base_block_length).
     """
 
     # Add special tokens for the Instruct model (not required for base model)
@@ -603,11 +608,15 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     min_step = float('inf')
     
     # Initialize manual_settings
-    manual_settings = {}
+    if manual_settings is None:
+        manual_settings = {}  # {block_position: block_size_value}
     
     # Single token greedy search: optimize only the first position
     num_blocks = gen_length // base_block_length
-    position = 0  # Only optimize the first position
+
+    # position = 0  # Only optimize the first position
+    position = curr_pos # optimize the position specified by curr_pos
+
     print(f"\n=== Optimizing position {position} (single token search) ===")
     best_value = None
     best_step = float('inf')
@@ -755,100 +764,6 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     print(f"Block size: {training_sample['block_size']}")
 
     return training_sample
-
-def generate_one_sample_at_curr_pos(model, tokenizer, device, prompt_text, model_args,
-                                    gen_length=32, base_block_length=2, steps=16, curr_pos=0):
-    """
-    At a given curr_pos, autoregressively generate the first `curr_pos` tokens (from scratch),
-    logging confidence/entropy per step. Then find the best block size starting at curr_pos.
-    Returns: {"features": [...], "block_size": best_value}
-    """
-    from torch.nn.functional import softmax
-
-    # Step 1: Apply chat template and tokenize base prompt
-    messages = [{"role": "user", "content": prompt_text}]
-    prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
-
-    # Step 2: Autoregressively decode first `curr_pos` tokens, logging conf/entropy
-    generated = input_ids.clone()
-    features = []
-
-    with torch.no_grad():
-        for i in range(curr_pos):
-            outputs = model(generated)
-            logits = outputs.logits[:, -1, :]
-            probs = softmax(logits, dim=-1)
-
-            entropy = -(probs * probs.log()).sum().item()
-            next_token = torch.argmax(probs, dim=-1)
-            confidence = probs[0, next_token].item()
-
-            features.append([confidence, entropy, i + 1])
-
-            # expand dims and append
-            next_token = next_token.unsqueeze(0) if next_token.ndim == 1 else next_token
-            generated = torch.cat([generated, next_token], dim=1)
-
-    # Optional: print what the model has generated so far
-    print(f"\n===== CURR_POS = {curr_pos} | PREFIX GENERATED =====")
-    print(tokenizer.decode(generated[0], skip_special_tokens=False))
-
-    # Step 3: Sweep block sizes starting at `curr_pos` to find best block size
-    best_value = None
-    best_step = float('inf')
-
-    for sweep_value in range(1, gen_length + 1):
-        manual_settings = {curr_pos // base_block_length: sweep_value}
-        try:
-            block_sizes = calculate_block_sizes(
-                gen_length=gen_length,
-                base_block_length=base_block_length,
-                manual_settings=manual_settings
-            )
-        except:
-            continue
-        if block_sizes is None:
-            continue
-
-        out, first_correct_step, _, _, _ = generate_custom(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=generated,
-            steps=steps,
-            gen_length=gen_length,
-            block_sizes=block_sizes,
-            temperature=0.0,
-            cfg_scale=0.0,
-            remasking="low_confidence"
-        )
-
-        # EARLY EXIT ON FAILURE
-        if first_correct_step == float("inf"):
-            print(f"⚠️ Found inf at sweep_value={sweep_value}")
-            if best_value is not None:
-                print(f"✅ Falling back to last good block size: {best_value}")
-                break
-            else:
-                print(f"❌ No valid block size found. Returning dummy sample.")
-                return {"features": features, "block_size": 1}
-
-        if first_correct_step < best_step:
-            best_step = first_correct_step
-            best_value = sweep_value
-
-    # Final check
-    if best_value is None:
-        print(f"❌ No valid block size found at all. Returning dummy sample.")
-        return {"features": features, "block_size": 1}
-
-    print(f"\n✅ Optimal block_size for curr_pos={curr_pos}: {best_value}")
-    print(f"📊 Feature rows: {len(features)}")
-
-    return {
-        "features": features,
-        "block_size": best_value
-    }
 
 def main(script_args, model_args, inference_args):
     """

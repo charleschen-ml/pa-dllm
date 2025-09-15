@@ -490,6 +490,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             print(f"  entropy: {log['decoded_entropy']} {log['remaining_entropy']}")
         print(f"{'='*60}")
 
+    # block_confidences: Final confidence scores for tokens that were actually decoded in each block
     return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence
 
 def main():

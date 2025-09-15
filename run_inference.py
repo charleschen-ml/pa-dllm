@@ -131,7 +131,15 @@ prompt = instr + question
 ########################################################
 # Generate one sample
 ########################################################
-# training_sample = generate_one_sample(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=1, steps=16, curr_pos=0)
+# manual_settings = {
+#     0:1,}
+# training_sample = generate_one_sample(
+#     model, tokenizer, device, prompt, model_args, 
+#     gen_length=16, 
+#     base_block_length=1, 
+#     steps=16, 
+#     curr_pos=1, 
+#     manual_settings=manual_settings,)
 # print(f"training_sample=\n{training_sample}")
 
 ########################################################
@@ -140,34 +148,56 @@ prompt = instr + question
 import json
 
 # Params
-# prompt_text = "Solve this problem and box your final answer:\nLily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?"
 gen_length = 16
 base_block_length = 1
 steps = 16
 
 # Collect training samples
 training_samples = []
+manual_settings = {}
 for curr_pos in range(gen_length):
     print(f"\n=== curr_pos = {curr_pos} ===")
-    sample = generate_one_sample_at_curr_pos(
+    if curr_pos > 0: # empty for the first iteration
+        manual_settings[curr_pos-1] = 1 # decode 1 token at a time for all previous positions
+        print(f"manual_settings={manual_settings}")
+    sample = generate_one_sample(
         model=model,
         tokenizer=tokenizer,
         device=device,
-        prompt_text=prompt,
+        prompt=prompt,
         model_args=model_args,
         gen_length=gen_length,
         base_block_length=base_block_length,
         steps=steps,
-        curr_pos=curr_pos
+        curr_pos=curr_pos,
+        manual_settings=manual_settings,
     )
     if sample:
         training_samples.append(sample)
 
-# Save to file
+# Save to JSON file
 import json
-output_path = "./data/sft_training_samples_greedy.json"
-with open(output_path, "w") as f:
+json_output_path = "./data/sft_training_samples_greedy.json"
+with open(json_output_path, "w") as f:
     json.dump(training_samples, f, indent=2)
 
-print(f"\n✅ Done. Saved {len(training_samples)} samples to {output_path}")
+# Save to CSV file for easier review
+import csv
+csv_output_path = "./data/sft_training_samples_greedy.csv"
+with open(csv_output_path, "w", newline='') as f:
+    writer = csv.writer(f)
+    
+    # Write header
+    writer.writerow(['sample_id', 'confidence', 'entropy', 'position', 'block_size'])
+    
+    # Write data
+    for sample_id, sample in enumerate(training_samples):
+        block_size = sample['block_size']
+        for feature in sample['features']:
+            confidence, entropy, position = feature
+            writer.writerow([sample_id, confidence, entropy, position, block_size])
+
+print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
+print(f"  📄 JSON: {json_output_path}")
+print(f"  📊 CSV:  {csv_output_path}")
 
