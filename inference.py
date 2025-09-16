@@ -291,7 +291,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     # Add special tokens for the Instruct model (not required for base model)
     m = [{"role": "user", "content": prompt}, ]
     prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-    prompt = prompt + "Lily can run \\boxed"
+    # prompt = prompt + "Lily can run \\boxed" # manually append golden tokens as an experiment 
 
     input_ids = tokenizer(prompt)['input_ids']
 
@@ -765,6 +765,79 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     print(f"Block size: {training_sample['block_size']}")
 
     return training_sample
+
+def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16):
+    """
+    Generate training samples by collecting confidence/entropy data at different curr_pos values,
+    and save them to JSON and CSV files.
+    
+    Args:
+        model: The model to use for generation
+        tokenizer: Tokenizer for the model
+        device: Device to run on
+        prompt: Input prompt string
+        model_args: Model arguments
+        gen_length: Generation length (default: 32)
+        base_block_length: Base block length (default: 2)
+        steps: Number of steps (default: 16)
+    
+    Returns:
+        List of training samples, each containing features and block_size
+    """
+    print(f"\n🔄 Augmenting sample with gen_length={gen_length}, base_block_length={base_block_length}, steps={steps}")
+    
+    # Collect training samples
+    training_samples = []
+    manual_settings = {}
+    
+    for curr_pos in range(gen_length):
+        print(f"\n=== curr_pos = {curr_pos} ===")
+        if curr_pos > 0:  # empty for the first iteration
+            manual_settings[curr_pos-1] = 1  # decode 1 token at a time for all previous positions
+            print(f"manual_settings={manual_settings}")
+        
+        sample = generate_one_sample(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            prompt=prompt,
+            model_args=model_args,
+            gen_length=gen_length,
+            base_block_length=base_block_length,
+            steps=steps,
+            curr_pos=curr_pos,
+            manual_settings=manual_settings,
+        )
+        if sample:
+            training_samples.append(sample)
+    
+    # Save to JSON file
+    import json
+    json_output_path = "./data/sft_training_samples_greedy.json"
+    with open(json_output_path, "w") as f:
+        json.dump(training_samples, f, indent=2)
+    
+    # Save to CSV file for easier review
+    import csv
+    csv_output_path = "./data/sft_training_samples_greedy.csv"
+    with open(csv_output_path, "w", newline='') as f:
+        writer = csv.writer(f)
+        
+        # Write header
+        writer.writerow(['sample_id', 'confidence', 'entropy', 'position', 'block_size'])
+        
+        # Write data
+        for sample_id, sample in enumerate(training_samples):
+            block_size = sample['block_size']
+            for feature in sample['features']:
+                confidence, entropy, position = feature
+                writer.writerow([sample_id, confidence, entropy, position, block_size])
+    
+    print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
+    print(f"  📄 JSON: {json_output_path}")
+    print(f"  📊 CSV:  {csv_output_path}")
+    
+    return training_samples
 
 def main(script_args, model_args, inference_args):
     """

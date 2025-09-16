@@ -19,6 +19,7 @@ importlib.reload(inference)
 
 # Load inference functions
 from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference, generate_one_sample
+from inference import augment_one_sample
 from generate import generate_vanilla, generate_custom
 
 # FASTEST: Load model weights and recreate architecture
@@ -142,61 +143,19 @@ prompt = instr + question
 # print(f"training_sample=\n{training_sample}")
 
 ########################################################
-# Generate training samples for different positions
+# Augment one sample
 ########################################################
-import json
-
 # Params
 gen_length = 16
 base_block_length = 1
 steps = 16
-
-# Collect training samples
-training_samples = []
-manual_settings = {}
-for curr_pos in range(gen_length):
-    print(f"\n=== curr_pos = {curr_pos} ===")
-    if curr_pos > 0: # empty for the first iteration
-        manual_settings[curr_pos-1] = 1 # decode 1 token at a time for all previous positions
-        print(f"manual_settings={manual_settings}")
-    sample = generate_one_sample(
-        model=model,
-        tokenizer=tokenizer,
-        device=device,
-        prompt=prompt,
-        model_args=model_args,
-        gen_length=gen_length,
-        base_block_length=base_block_length,
-        steps=steps,
-        curr_pos=curr_pos,
-        manual_settings=manual_settings,
-    )
-    if sample:
-        training_samples.append(sample)
-
-# Save to JSON file
-import json
-json_output_path = "./data/sft_training_samples_greedy.json"
-with open(json_output_path, "w") as f:
-    json.dump(training_samples, f, indent=2)
-
-# Save to CSV file for easier review
-import csv
-csv_output_path = "./data/sft_training_samples_greedy.csv"
-with open(csv_output_path, "w", newline='') as f:
-    writer = csv.writer(f)
-    
-    # Write header
-    writer.writerow(['sample_id', 'confidence', 'entropy', 'position', 'block_size'])
-    
-    # Write data
-    for sample_id, sample in enumerate(training_samples):
-        block_size = sample['block_size']
-        for feature in sample['features']:
-            confidence, entropy, position = feature
-            writer.writerow([sample_id, confidence, entropy, position, block_size])
-
-print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
-print(f"  📄 JSON: {json_output_path}")
-print(f"  📊 CSV:  {csv_output_path}")
-
+training_samples = augment_one_sample(
+    model=model,
+    tokenizer=tokenizer,
+    device=device,
+    prompt=prompt,
+    model_args=model_args,
+    gen_length=gen_length,
+    base_block_length=base_block_length,
+    steps=steps
+)
