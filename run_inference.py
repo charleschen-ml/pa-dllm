@@ -82,34 +82,29 @@ if torch.cuda.is_available():
     print(".1f")
     print(".1f")
 
-# Run single inference
-# run_inference(model, tokenizer, device, prompt, model_args, gen_length=16, base_block_length=2, steps=8)
+########################################################
+# Run batch inference
+########################################################
+df = run_inference_batch(
+    model=model,
+    tokenizer=tokenizer,
+    device=device,
+    model_args=model_args,
+    input_csv_path="./data/gsm8k.csv",
+    output_csv_path="./data/gsm8k_output.csv",
+    steps=32,
+    gen_length=32,
+    block_length=1
+)
 
-# """Batch"""
+# Load df from csv
+df = pd.read_csv("./data/gsm8k_output.csv")
 
-# # Google Drive refresh removed - running on local server
+# Google Drive refresh removed - running on local server
 
-# # Run batch inference
-# df = run_inference_batch(
-#     model=model,
-#     tokenizer=tokenizer,
-#     device=device,
-#     model_args=model_args,
-#     input_csv_path="./data/gsm8k.csv",
-#     output_csv_path="./data/gsm8k_output.csv",
-#     steps=32,
-#     gen_length=32,
-#     block_length=1
-# )
-
-# # Load df from csv
-# df = pd.read_csv("./data/gsm8k_output.csv")
-
-# # Google Drive refresh removed - running on local server
-
-# # Calculate score
-# correct_path = "./data/gsm8k_correct.csv"
-# calculate_score(df, correct_path)
+# Calculate score
+correct_path = "./data/gsm8k_correct.csv"
+calculate_score(df, correct_path)
 
 """Greedy"""
 
@@ -131,8 +126,7 @@ prompt = instr + question
 ########################################################
 # Generate one sample
 ########################################################
-# manual_settings = {
-#     0:1,}
+# manual_settings = {}
 # training_sample = generate_one_sample(
 #     model, tokenizer, device, prompt, model_args, 
 #     gen_length=16, 
@@ -145,17 +139,106 @@ prompt = instr + question
 ########################################################
 # Augment one sample
 ########################################################
-# Params
-gen_length = 16
-base_block_length = 1
-steps = 16
-training_samples = augment_one_sample(
-    model=model,
-    tokenizer=tokenizer,
-    device=device,
-    prompt=prompt,
-    model_args=model_args,
-    gen_length=gen_length,
-    base_block_length=base_block_length,
-    steps=steps
-)
+# gen_length = 32
+# base_block_length = 1
+# steps = 32
+# training_samples = augment_one_sample(
+#     model=model,
+#     tokenizer=tokenizer,
+#     device=device,
+#     prompt=prompt,
+#     model_args=model_args,
+#     gen_length=gen_length,
+#     base_block_length=base_block_length,
+#     steps=steps
+# )
+
+########################################################
+# Augment multiple samples
+########################################################
+# import pandas as pd
+# import json
+# import csv
+
+# # Load correct questions
+# correct_path = "./data/gsm8k_correct.csv"
+# df = pd.read_csv(correct_path)
+
+# # Truncate to desired number of questions
+# num_questions = 2  # Change this to any number you want
+# df = df.head(num_questions)
+# print(f"Processing {len(df)} questions (truncated from full dataset)")
+
+# # Parameters
+# instr = "Solve this problem and box your final answer:\n"
+# gen_length = 16
+# base_block_length = 1
+# steps = 16
+
+# # Collect all training samples from all questions
+# all_training_samples = []
+
+# print(f"Processing {len(df)} questions...")
+
+# for i in range(len(df)):
+#     question = df.iloc[i]['question']
+#     correct_answer = int(df.iloc[i]['answer_numerical'])  # Extract numerical answer
+#     prompt = instr + question
+    
+#     print(f"\n{'='*60}")
+#     print(f"Processing question {i+1}/{len(df)}")
+#     print(f"Question: {question[:100]}...")
+#     print(f"Correct answer: {correct_answer}")
+#     print(f"{'='*60}")
+    
+#     # Generate training samples for this question (but don't save files yet)
+#     question_samples = augment_one_sample(
+#         model=model,
+#         tokenizer=tokenizer,
+#         device=device,
+#         prompt=prompt,
+#         model_args=model_args,
+#         gen_length=gen_length,
+#         base_block_length=base_block_length,
+#         steps=steps,
+#         save_files=False,  # Don't save files for each question
+#         correct_answer=correct_answer  # Pass the correct answer
+#     )
+    
+#     # Add question metadata to each sample
+#     for sample in question_samples:
+#         sample['question_id'] = i
+#         sample['question'] = question
+    
+#     all_training_samples.extend(question_samples)
+#     print(f"Generated {len(question_samples)} samples for question {i+1}")
+
+# # Save all samples to files
+# print(f"\n{'='*60}")
+# print(f"Saving {len(all_training_samples)} total training samples...")
+
+# # Save to JSON file
+# json_output_path = "./data/sft_training_samples_multi_greedy.json"
+# with open(json_output_path, "w") as f:
+#     json.dump(all_training_samples, f, indent=2)
+
+# # Save to CSV file for easier review
+# csv_output_path = "./data/sft_training_samples_multi_greedy.csv"
+# with open(csv_output_path, "w", newline='') as f:
+#     writer = csv.writer(f)
+    
+#     # Write header
+#     writer.writerow(['sample_id', 'question_id', 'confidence', 'entropy', 'position', 'block_size'])
+    
+#     # Write data
+#     for sample_id, sample in enumerate(all_training_samples):
+#         block_size = sample['block_size']
+#         question_id = sample['question_id']
+#         for feature in sample['features']:
+#             confidence, entropy, position = feature
+#             writer.writerow([sample_id, question_id, confidence, entropy, position, block_size])
+
+# print(f"\n✅ Done. Saved {len(all_training_samples)} samples to:")
+# print(f"  📄 JSON: {json_output_path}")
+# print(f"  📊 CSV:  {csv_output_path}")
+# print(f"  📈 Samples per question: {len(all_training_samples) / len(df):.1f} avg")

@@ -394,6 +394,7 @@ def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, ou
 
         # Decode the output
         output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        print(f"decoded output=\n{output_text}")
         numeric_answer = extract_numerical(output_text)
 
         completions.append(output_text)
