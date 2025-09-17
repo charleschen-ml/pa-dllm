@@ -473,7 +473,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
                 
             print(f"Testing position {position} = {sweep_value}")
             
-            out, first_correct_step, block_confidences, initial_entropy, initial_confidence = generate_custom(
+            out, first_correct_step, block_confidences, initial_entropy, initial_confidence, _ = generate_custom(
                 model, 
                 tokenizer, # charles added
                 input_ids,
@@ -554,7 +554,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
 
         if final_block_sizes is not None:
             # First, run generate_custom to get the final result and confidences
-            out, _, final_confidences, _, _ = generate_custom(
+            out, _, final_confidences, _, _, _ = generate_custom(
                 model,
                 tokenizer,
                 input_ids,
@@ -622,6 +622,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     print(f"\n=== Optimizing position {position} (single token search) ===")
     best_value = None
     best_step = float('inf')
+    optimal_out = None  # Store optimal token IDs
+    stored_ar_tokens = None  # Store AR context tokens from first call
     
     for sweep_value in range(1, gen_length + 1):  # Try values 1 to gen_length
         current_settings = manual_settings.copy()
@@ -638,7 +640,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             
         print(f"Testing position {position} = {sweep_value}")
         
-        out, first_correct_step, block_confidences, initial_entropy, initial_confidence = generate_custom(
+        out, first_correct_step, block_confidences, initial_entropy, initial_confidence, ar_context_tokens = generate_custom(
             model, 
             tokenizer, # charles added
             input_ids,
@@ -652,6 +654,11 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             correct_answer=correct_answer
         )
         first_correct_steps.append(first_correct_step)
+
+        # Store AR context tokens from the first call (they're the same for all sweep values)
+        if stored_ar_tokens is None and ar_context_tokens is not None:
+            stored_ar_tokens = ar_context_tokens.clone()
+            print(f"📝 Stored AR context tokens for analysis")
 
         # Early exit: if no correct answer was ever found (inf), keep last good size and skip remaining sweeps
         if first_correct_step == float('inf'):
@@ -679,8 +686,9 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             best_step = first_correct_step
             best_value = sweep_value
             optimal_block_sizes = block_sizes.copy()
-            # Store the output text and confidences for the best configuration
+            # Store the output text, token IDs, and confidences for the best configuration
             optimal_output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+            optimal_out = out.clone()  # Store the token IDs
             optimal_block_confidences = block_confidences.copy()
     
     # Update manual_settings with the best value found for this position
@@ -720,7 +728,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 
         if final_block_sizes is not None:
             # First, run generate_custom to get the final result and confidences
-            out, _, final_confidences, _, _ = generate_custom(
+            out, _, final_confidences, _, _, _ = generate_custom(
                 model,
                 tokenizer,
                 input_ids,
@@ -735,14 +743,18 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     # store the input-ouput pair in this format (e.g. curr_pos=4):
     # {
     #     "features": [
-    #         [0.72, 0.63, 5], # [confidence, entropy, position] for token 5
-    #         [0.65, 0.80, 6], # [confidence, entropy, position] for token 6
-    #         [0.55, 0.92, 7] # [confidence, entropy, position] for token 7
+    #         [0.72, 0.63, 5, 1234, " token"], # [confidence, entropy, position, token_id, token_text] for token 5
+    #         [0.65, 0.80, 6, 5678, "text"], # [confidence, entropy, position, token_id, token_text] for token 6
+    #         [0.55, 0.92, 7, 9012, "!"] # [confidence, entropy, position, token_id, token_text] for token 7
     #         ...
-    #         [0.55, 0.92, 10] # [confidence, entropy, position] for last token
+    #         [0.55, 0.92, 10, 3456, "."] # [confidence, entropy, position, token_id, token_text] for last token
     #     ],
     #     "block_size": 2  # supervised label
     # }
+    # 
+    # NOTE: token_id and token_text are captured AFTER AR context is built (blocks 0 to curr_pos-1)
+    # and represent top-1 predictions for remaining positions given that AR context.
+    # This allows analysis of which tokens are suitable for parallel vs sequential decoding.
     
     # Extract features for all remaining tokens from curr_pos to gen_length
     features = []
@@ -753,9 +765,21 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             if idx < len(initial_confidence) and idx < len(initial_entropy):
                 confidence = initial_confidence[idx]
                 entropy = initial_entropy[idx]
-                features.append([confidence, entropy, position])
+                
+                # Get token and token_id from AR context + top-1 predictions
+                token_id = None
+                token_text = None
+                if stored_ar_tokens is not None:
+                    # Extract token_id from the AR context + top-1 predictions
+                    gen_start_idx = input_ids.shape[1]  # Start of generation
+                    token_pos_in_gen = idx  # Position within generation
+                    if gen_start_idx + token_pos_in_gen < stored_ar_tokens.shape[1]:
+                        token_id = stored_ar_tokens[0, gen_start_idx + token_pos_in_gen].item()
+                        token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+                
+                features.append([confidence, entropy, position, token_id, token_text])
             else:
-                features.append([0.0, 0.0, position])
+                features.append([0.0, 0.0, position, None, None])
     
     # Create training sample
     training_sample = {
@@ -829,14 +853,14 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
         writer = csv.writer(f)
         
         # Write header
-        writer.writerow(['sample_id', 'confidence', 'entropy', 'position', 'block_size'])
+        writer.writerow(['sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 'block_size'])
         
         # Write data
         for sample_id, sample in enumerate(training_samples):
             block_size = sample['block_size']
             for feature in sample['features']:
-                confidence, entropy, position = feature
-                writer.writerow([sample_id, confidence, entropy, position, block_size])
+                confidence, entropy, position, token_id, token_text = feature
+                writer.writerow([sample_id, confidence, entropy, position, token_id, token_text, block_size])
     
     print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
     print(f"  📄 JSON: {json_output_path}")

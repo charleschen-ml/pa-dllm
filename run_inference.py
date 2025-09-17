@@ -108,9 +108,13 @@ if torch.cuda.is_available():
 ########################################################
 df = pd.read_csv("./data/gsm8k_correct.csv")
 instr = "Solve this problem and box your final answer:\n"
-# question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?\n"
-question = df.iloc[0]['question'] # load the first question in df
-correct_answer = int(df.iloc[0]['answer_numerical'])  # extract the correct numerical answer
+
+question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?\n"
+correct_answer = 72
+
+# question = df.iloc[0]['question'] # load the first question in df
+# correct_answer = int(df.iloc[0]['answer_numerical'])  # extract the correct numerical answer
+
 prompt = instr + question
 
 ########################################################
@@ -139,9 +143,9 @@ prompt = instr + question
 ########################################################
 # Augment one sample
 ########################################################
-gen_length = 32
+gen_length = 16
 base_block_length = 1
-steps = 32
+steps = 16
 training_samples = augment_one_sample(
     model=model,
     tokenizer=tokenizer,

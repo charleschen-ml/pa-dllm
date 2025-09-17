@@ -322,6 +322,9 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     initial_entropy = None
     initial_confidence = None
     
+    # Track top-1 tokens after AR context is built (for parallel vs sequential analysis)
+    ar_context_tokens = None
+    
     if cfg_scale > 0.:
         un_x = x.clone()
         un_x[prompt_index] = mask_id
@@ -378,6 +381,15 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             masked_count = (x[0, gen_start:gen_end] == mask_id).sum().item()
             decoded_count = gen_length - masked_count
             print(f"🎭 Tokens decoded so far: {decoded_count}/{gen_length} (masked: {masked_count})")
+            
+            # CAPTURE TOP-1 TOKENS after AR context is built (for parallel vs sequential analysis)
+            print(f"🔍 CAPTURING top-1 tokens after AR context (blocks 0 to {curr_pos-1} processed)")
+            top1_tokens = torch.argmax(logits, dim=-1)  # Get top-1 predictions for all positions
+            ar_context_tokens = x.clone()  # Start with current state (AR context + masks)
+            ar_context_tokens[0, gen_start:gen_end] = top1_tokens[0, gen_start:gen_end]  # Fill with top-1 predictions
+            
+            ar_tokens_text = tokenizer.decode(ar_context_tokens[0, prompt.shape[1]:], skip_special_tokens=True)
+            print(f"📝 AR context + top-1 predictions: '{ar_tokens_text}'")
             
             p = F.softmax(logits, dim=-1)
             initial_conf = torch.squeeze(
@@ -532,7 +544,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
         print(f"{'='*60}")
 
     # block_confidences: Final confidence scores for tokens that were actually decoded in each block
-    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence
+    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence, ar_context_tokens
 
 def main():
     device = 'cuda'
