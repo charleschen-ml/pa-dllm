@@ -83,8 +83,9 @@ if torch.cuda.is_available():
     print(".1f")
 
 ########################################################
-# Run batch inference
+# Create dataset of questions answered correctly
 ########################################################
+# Run batch inference
 df = run_inference_batch(
     model=model,
     tokenizer=tokenizer,
@@ -96,21 +97,18 @@ df = run_inference_batch(
     gen_length=32,
     block_length=1
 )
-
 # Load df from csv
 df = pd.read_csv("./data/gsm8k_output.csv")
-
-# Google Drive refresh removed - running on local server
-
 # Calculate score
 correct_path = "./data/gsm8k_correct.csv"
 calculate_score(df, correct_path)
 
-"""Greedy"""
-
+########################################################
 # Load single prompt
+########################################################
 instr = "Solve this problem and box your final answer:\n"
-question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?\n"
+# question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?\n"
+question = df.iloc[0]['question'] # load the first question in df
 prompt = instr + question
 
 ########################################################
