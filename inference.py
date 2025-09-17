@@ -580,13 +580,14 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
     return
 
 # Generate one sample for SFT dataset
-def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0, manual_settings=None):
+def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0, manual_settings=None, correct_answer=None):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     
     Args:
         manual_settings: Dict of {block_position: block_size_value} for manual block size settings.
                         If None, starts with empty dict (all blocks use base_block_length).
+        correct_answer: Expected correct answer for checking correctness (optional).
     """
 
     # Add special tokens for the Instruct model (not required for base model)
@@ -647,7 +648,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             temperature=0.,
             cfg_scale=0.,
             remasking='low_confidence',
-            curr_pos=curr_pos  # Pass curr_pos to capture confidence/entropy at the right block
+            curr_pos=curr_pos,  # Pass curr_pos to capture confidence/entropy at the right block
+            correct_answer=correct_answer
         )
         first_correct_steps.append(first_correct_step)
 
@@ -767,7 +769,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 
     return training_sample
 
-def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16):
+def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None):
     """
     Generate training samples by collecting confidence/entropy data at different curr_pos values,
     and save them to JSON and CSV files.
@@ -781,6 +783,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
         gen_length: Generation length (default: 32)
         base_block_length: Base block length (default: 2)
         steps: Number of steps (default: 16)
+        correct_answer: Expected correct answer for checking correctness (optional)
     
     Returns:
         List of training samples, each containing features and block_size
@@ -808,6 +811,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             steps=steps,
             curr_pos=curr_pos,
             manual_settings=manual_settings,
+            correct_answer=correct_answer,
         )
         if sample:
             training_samples.append(sample)

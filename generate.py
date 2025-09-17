@@ -270,7 +270,7 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
 
 @ torch.no_grad()
 def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_sizes=None, temperature=0.,
-                   cfg_scale=0., remasking='low_confidence', mask_id=126336, curr_pos=0,):
+                   cfg_scale=0., remasking='low_confidence', mask_id=126336, curr_pos=0, correct_answer=None):
     '''
     Args:
         model: Mask predictor.
@@ -284,6 +284,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
         remasking: Remasking strategy. 'low_confidence' or 'random'.
         mask_id: The toke id of [MASK] is 126336.
         curr_pos: position where we want to save confidence and entropy.
+        correct_answer: Expected correct answer for checking correctness (optional).
     '''
     # debug
     # print("\nstart generate_custom:\n")
@@ -509,9 +510,12 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             # check answer correct
             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
             # print("\n" + out_text)
-            is_correct = extract_boxed(out_text) == 72
-            if is_correct and first_correct_step is None:
-                first_correct_step = total_step
+            is_correct = False
+            if correct_answer is not None:
+                extracted_answer = extract_boxed(out_text)
+                is_correct = extracted_answer == correct_answer
+                if is_correct and first_correct_step is None:
+                    first_correct_step = total_step
             # print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
 
     print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")

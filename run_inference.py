@@ -49,8 +49,8 @@ if torch.cuda.is_available():
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
 
-# Set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Set device - use GPU 1 instead of 0 (GPU 0 is being used by another user)
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 # Load model architecture on CPU first to avoid memory conflicts
 model = AutoModel.from_pretrained(
@@ -85,30 +85,32 @@ if torch.cuda.is_available():
 ########################################################
 # Create dataset of questions answered correctly
 ########################################################
-# Run batch inference
-df = run_inference_batch(
-    model=model,
-    tokenizer=tokenizer,
-    device=device,
-    model_args=model_args,
-    input_csv_path="./data/gsm8k.csv",
-    output_csv_path="./data/gsm8k_output.csv",
-    steps=32,
-    gen_length=32,
-    block_length=1
-)
-# Load df from csv
-df = pd.read_csv("./data/gsm8k_output.csv")
-# Calculate score
-correct_path = "./data/gsm8k_correct.csv"
-calculate_score(df, correct_path)
+# # Run batch inference
+# df = run_inference_batch(
+#     model=model,
+#     tokenizer=tokenizer,
+#     device=device,
+#     model_args=model_args,
+#     input_csv_path="./data/gsm8k.csv",
+#     output_csv_path="./data/gsm8k_output.csv",
+#     steps=32,
+#     gen_length=32,
+#     block_length=1
+# )
+# # Load df from csv
+# df = pd.read_csv("./data/gsm8k_output.csv")
+# # Calculate score
+# correct_path = "./data/gsm8k_correct.csv"
+# calculate_score(df, correct_path)
 
 ########################################################
 # Load single prompt
 ########################################################
+df = pd.read_csv("./data/gsm8k_correct.csv")
 instr = "Solve this problem and box your final answer:\n"
 # question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?\n"
 question = df.iloc[0]['question'] # load the first question in df
+correct_answer = int(df.iloc[0]['answer_numerical'])  # extract the correct numerical answer
 prompt = instr + question
 
 ########################################################
@@ -137,19 +139,20 @@ prompt = instr + question
 ########################################################
 # Augment one sample
 ########################################################
-# gen_length = 32
-# base_block_length = 1
-# steps = 32
-# training_samples = augment_one_sample(
-#     model=model,
-#     tokenizer=tokenizer,
-#     device=device,
-#     prompt=prompt,
-#     model_args=model_args,
-#     gen_length=gen_length,
-#     base_block_length=base_block_length,
-#     steps=steps
-# )
+gen_length = 32
+base_block_length = 1
+steps = 32
+training_samples = augment_one_sample(
+    model=model,
+    tokenizer=tokenizer,
+    device=device,
+    prompt=prompt,
+    model_args=model_args,
+    gen_length=gen_length,
+    base_block_length=base_block_length,
+    steps=steps,
+    correct_answer=correct_answer
+)
 
 ########################################################
 # Augment multiple samples
