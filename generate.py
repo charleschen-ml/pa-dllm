@@ -324,6 +324,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     
     # Track top-1 tokens after AR context is built (for parallel vs sequential analysis)
     ar_context_tokens = None
+    additional_features = {}  # Store additional confidence metrics
     
     if cfg_scale > 0.:
         un_x = x.clone()
@@ -391,13 +392,83 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             ar_tokens_text = tokenizer.decode(ar_context_tokens[0, prompt.shape[1]:], skip_special_tokens=True)
             print(f"📝 AR context + top-1 predictions: '{ar_tokens_text}'")
             
-            p = F.softmax(logits, dim=-1)
+            # Calculate comprehensive confidence metrics
+            p = F.softmax(logits, dim=-1)  # Full softmax probabilities
+            gen_logits = logits[0, gen_start:gen_end]  # Logits for generation positions only
+            gen_probs = p[0, gen_start:gen_end]  # Probabilities for generation positions only
+            
+            # Get top-k predictions for margin calculations
+            top_probs, top_indices = torch.topk(gen_probs, k=min(2, gen_probs.shape[1]), dim=1)
+            
+            # Basic confidence and entropy (original)
             initial_conf = torch.squeeze(
-                torch.gather(p, dim=-1, index=torch.unsqueeze(torch.argmax(logits, dim=-1), -1)), -1
-            )[0, gen_start:gen_end]
+                torch.gather(gen_probs, dim=-1, index=torch.unsqueeze(torch.argmax(gen_logits, dim=-1), -1)), -1
+            )
             
             initial_confidence = [round(float(initial_conf[i]), 4) for i in range(gen_length)]
             initial_entropy = [_entropy(float(initial_conf[i])) for i in range(gen_length)]
+            
+            # NEW FEATURES: Calculate additional metrics
+            additional_features = {}
+            
+            for pos in range(gen_length):
+                pos_probs = gen_probs[pos]  # Probabilities for this position
+                pos_logits = gen_logits[pos]  # Logits for this position
+                
+                # Basic features
+                conf_0 = float(initial_conf[pos])  # Confidence of next token
+                entropy_0 = initial_entropy[pos]  # Entropy of next token
+                
+                # Top1 margin (difference between top-1 and top-2)
+                pos_top_probs, _ = torch.topk(pos_probs, k=min(2, pos_probs.shape[0]))
+                if len(pos_top_probs) >= 2:
+                    top1_margin = float(pos_top_probs[0] - pos_top_probs[1])
+                else:
+                    top1_margin = float(pos_top_probs[0])  # Only one token available
+                
+                # Global features (mean/std across remaining tokens from current position)
+                remaining_conf = initial_confidence[pos:]
+                remaining_entropy = initial_entropy[pos:]
+                
+                mean_confidence = float(np.mean(remaining_conf)) if remaining_conf else 0.0
+                mean_entropy = float(np.mean(remaining_entropy)) if remaining_entropy else 0.0
+                conf_std = float(np.std(remaining_conf)) if len(remaining_conf) > 1 else 0.0
+                entropy_std = float(np.std(remaining_entropy)) if len(remaining_entropy) > 1 else 0.0
+                
+                # Specific position features
+                conf_1 = remaining_conf[1] if len(remaining_conf) > 1 else 0.0  # 2nd token confidence
+                
+                # Top-K vs Sequential features
+                # Get all remaining confidences and find top-k vs next-k
+                remaining_tensor = torch.tensor(remaining_conf)
+                
+                # Top4/8 confidence minimums (best 4/8 tokens regardless of position)
+                top4_values, _ = torch.topk(remaining_tensor, k=min(4, len(remaining_tensor)), largest=True)
+                top8_values, _ = torch.topk(remaining_tensor, k=min(8, len(remaining_tensor)), largest=True)
+                top4_conf_min = float(top4_values[-1]) if len(top4_values) > 0 else 0.0  # Minimum of top 4
+                top8_conf_min = float(top8_values[-1]) if len(top8_values) > 0 else 0.0  # Minimum of top 8
+                
+                # Next4/8 confidence minimums (immediate next 4/8 sequential tokens)
+                next4_conf = remaining_conf[:4]  # Next 4 sequential tokens
+                next8_conf = remaining_conf[:8]  # Next 8 sequential tokens
+                next4_conf_min = float(min(next4_conf)) if next4_conf else 0.0
+                next8_conf_min = float(min(next8_conf)) if next8_conf else 0.0
+                
+                # Store all features for this position
+                additional_features[pos] = {
+                    'conf_0': conf_0,
+                    'entropy_0': entropy_0,
+                    'top1_margin': top1_margin,
+                    'mean_confidence': mean_confidence,
+                    'mean_entropy': mean_entropy,
+                    'conf_std': conf_std,
+                    'entropy_std': entropy_std,
+                    'conf_1': conf_1,
+                    'top4_conf_min': top4_conf_min,
+                    'next4_conf_min': next4_conf_min,
+                    'top8_conf_min': top8_conf_min,
+                    'next8_conf_min': next8_conf_min,
+                }
             
             # Show sample of captured values
             print(f"📊 Sample confidence values: {initial_confidence[:5]}...")
@@ -544,7 +615,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
         print(f"{'='*60}")
 
     # block_confidences: Final confidence scores for tokens that were actually decoded in each block
-    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence, ar_context_tokens
+    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features
 
 def main():
     device = 'cuda'

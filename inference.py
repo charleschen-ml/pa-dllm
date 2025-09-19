@@ -473,7 +473,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
                 
             print(f"Testing position {position} = {sweep_value}")
             
-            out, first_correct_step, block_confidences, initial_entropy, initial_confidence, _ = generate_custom(
+            out, first_correct_step, block_confidences, initial_entropy, initial_confidence, _, _ = generate_custom(
                 model, 
                 tokenizer, # charles added
                 input_ids,
@@ -554,7 +554,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
 
         if final_block_sizes is not None:
             # First, run generate_custom to get the final result and confidences
-            out, _, final_confidences, _, _, _ = generate_custom(
+            out, _, final_confidences, _, _, _, _ = generate_custom(
                 model,
                 tokenizer,
                 input_ids,
@@ -624,6 +624,9 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     best_step = float('inf')
     optimal_out = None  # Store optimal token IDs
     stored_ar_tokens = None  # Store AR context tokens from first call
+    stored_additional_features = None  # Store additional confidence metrics from first call
+    stored_initial_confidence = None  # Store full confidence list
+    stored_initial_entropy = None  # Store full entropy list
     
     for sweep_value in range(1, gen_length + 1):  # Try values 1 to gen_length
         current_settings = manual_settings.copy()
@@ -640,7 +643,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             
         print(f"Testing position {position} = {sweep_value}")
         
-        out, first_correct_step, block_confidences, initial_entropy, initial_confidence, ar_context_tokens = generate_custom(
+        out, first_correct_step, block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features = generate_custom(
             model, 
             tokenizer, # charles added
             input_ids,
@@ -655,10 +658,13 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         )
         first_correct_steps.append(first_correct_step)
 
-        # Store AR context tokens from the first call (they're the same for all sweep values)
+        # Store AR context tokens, additional features, and full confidence/entropy lists from the first call
         if stored_ar_tokens is None and ar_context_tokens is not None:
             stored_ar_tokens = ar_context_tokens.clone()
-            print(f"📝 Stored AR context tokens for analysis")
+            stored_additional_features = additional_features.copy() if additional_features else {}
+            stored_initial_confidence = initial_confidence.copy() if initial_confidence else []
+            stored_initial_entropy = initial_entropy.copy() if initial_entropy else []
+            print(f"📝 Stored AR context tokens, additional features, and full confidence/entropy lists for analysis")
 
         # Early exit: if no correct answer was ever found (inf), keep last good size and skip remaining sweeps
         if first_correct_step == float('inf'):
@@ -728,7 +734,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 
         if final_block_sizes is not None:
             # First, run generate_custom to get the final result and confidences
-            out, _, final_confidences, _, _, _ = generate_custom(
+            out, _, final_confidences, _, _, _, _ = generate_custom(
                 model,
                 tokenizer,
                 input_ids,
@@ -743,48 +749,93 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     # store the input-ouput pair in this format (e.g. curr_pos=4):
     # {
     #     "features": [
-    #         [0.72, 0.63, 5, 1234, " token"], # [confidence, entropy, position, token_id, token_text] for token 5
-    #         [0.65, 0.80, 6, 5678, "text"], # [confidence, entropy, position, token_id, token_text] for token 6
-    #         [0.55, 0.92, 7, 9012, "!"] # [confidence, entropy, position, token_id, token_text] for token 7
-    #         ...
-    #         [0.55, 0.92, 10, 3456, "."] # [confidence, entropy, position, token_id, token_text] for last token
+    #         [confidence, entropy, position, token_id, token_text, conf_0, entropy_0, top1_margin, 
+    #          mean_confidence, mean_entropy, conf_std, entropy_std, conf_1, top4_conf_min, 
+    #          next4_conf_min, top8_conf_min, next8_conf_min]  # ONE feature row (17 features total)
     #     ],
     #     "block_size": 2  # supervised label
     # }
     # 
-    # NOTE: token_id and token_text are captured AFTER AR context is built (blocks 0 to curr_pos-1)
-    # and represent top-1 predictions for remaining positions given that AR context.
+    # NOTE: Features are captured AFTER AR context is built (blocks 0 to curr_pos-1)
+    # - Basic: confidence, entropy, position, token_id, token_text
+    # - Immediate: conf_0 (next token confidence), entropy_0, top1_margin
+    # - Global: mean_confidence, mean_entropy, conf_std, entropy_std
+    # - Specific: conf_1 (second token confidence)
+    # - Comparative: top4/8_conf_min (best tokens), next4/8_conf_min (sequential tokens)
     # This allows analysis of which tokens are suitable for parallel vs sequential decoding.
     
-    # Extract features for all remaining tokens from curr_pos to gen_length
+    # Extract features for the NEXT token after curr_pos (only one feature row per curr_pos)
     features = []
-    if initial_confidence is not None and initial_entropy is not None:
-        for position in range(curr_pos + 1, gen_length + 1):
-            # Get confidence and entropy from initial values (index is position - 1 since it's 0-indexed)
-            idx = position - 1
-            if idx < len(initial_confidence) and idx < len(initial_entropy):
-                confidence = initial_confidence[idx]
-                entropy = initial_entropy[idx]
-                
-                # Get token and token_id from AR context + top-1 predictions
-                token_id = None
-                token_text = None
-                if stored_ar_tokens is not None:
-                    # Extract token_id from the AR context + top-1 predictions
-                    gen_start_idx = input_ids.shape[1]  # Start of generation
-                    token_pos_in_gen = idx  # Position within generation
-                    if gen_start_idx + token_pos_in_gen < stored_ar_tokens.shape[1]:
-                        token_id = stored_ar_tokens[0, gen_start_idx + token_pos_in_gen].item()
-                        token_text = tokenizer.decode([token_id], skip_special_tokens=False)
-                
-                features.append([confidence, entropy, position, token_id, token_text])
-            else:
-                features.append([0.0, 0.0, position, None, None])
+    if stored_initial_confidence is not None and stored_initial_entropy is not None and curr_pos < gen_length - 1:
+        # The position we're analyzing is curr_pos + 1 (the immediate next token)
+        position = curr_pos + 1
+        idx = position - 1  # 0-indexed position in arrays (since position is 1-indexed)
+        
+        if idx < len(stored_initial_confidence) and idx < len(stored_initial_entropy):
+            confidence = stored_initial_confidence[idx]
+            entropy = stored_initial_entropy[idx]
+            
+            # Get token and token_id from AR context + top-1 predictions
+            token_id = None
+            token_text = None
+            if stored_ar_tokens is not None:
+                # Extract token_id from the AR context + top-1 predictions
+                gen_start_idx = input_ids.shape[1]  # Start of generation
+                token_pos_in_gen = idx  # Position within generation
+                if gen_start_idx + token_pos_in_gen < stored_ar_tokens.shape[1]:
+                    token_id = stored_ar_tokens[0, gen_start_idx + token_pos_in_gen].item()
+                    token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+            
+            # Get additional features for this position (calculated from curr_pos perspective)
+            additional_feats = stored_additional_features.get(curr_pos, {}) if stored_additional_features else {}
+            
+            # Create comprehensive feature vector
+            feature_row = [
+                confidence, entropy, position, token_id, token_text,
+                additional_feats.get('conf_0', 0.0),
+                additional_feats.get('entropy_0', 0.0), 
+                additional_feats.get('top1_margin', 0.0),
+                additional_feats.get('mean_confidence', 0.0),
+                additional_feats.get('mean_entropy', 0.0),
+                additional_feats.get('conf_std', 0.0),
+                additional_feats.get('entropy_std', 0.0),
+                additional_feats.get('conf_1', 0.0),
+                additional_feats.get('top4_conf_min', 0.0),
+                additional_feats.get('next4_conf_min', 0.0),
+                additional_feats.get('top8_conf_min', 0.0),
+                additional_feats.get('next8_conf_min', 0.0),
+            ]
+            
+            features.append(feature_row)
+        else:
+            # Default feature row with zeros for missing data
+            default_row = [0.0, 0.0, position, None, None] + [0.0] * 12  # 12 additional features
+            features.append(default_row)
     
-    # Create training sample
+    # Create training sample with full lists preserved
+    full_token_ids = []
+    full_token_texts = []
+    
+    if stored_ar_tokens is not None:
+        gen_start_idx = input_ids.shape[1]
+        gen_end_idx = gen_start_idx + gen_length
+        for pos in range(gen_length):
+            if gen_start_idx + pos < stored_ar_tokens.shape[1]:
+                token_id = stored_ar_tokens[0, gen_start_idx + pos].item()
+                token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+                full_token_ids.append(token_id)
+                full_token_texts.append(token_text)
+            else:
+                full_token_ids.append(None)
+                full_token_texts.append(None)
+    
     training_sample = {
         "features": features,
-        "block_size": best_value if best_value is not None else 1
+        "block_size": best_value if best_value is not None else 1,
+        "full_confidence_list": stored_initial_confidence if stored_initial_confidence else [],
+        "full_entropy_list": stored_initial_entropy if stored_initial_entropy else [],
+        "full_token_ids": full_token_ids,
+        "full_token_texts": full_token_texts
     }
     
     print(f"\nTraining sample for curr_pos={curr_pos}:")
@@ -853,14 +904,48 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
         writer = csv.writer(f)
         
         # Write header
-        writer.writerow(['sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 'block_size'])
+        header = [
+            'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
+            'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+            'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
+            'top8_conf_min', 'next8_conf_min', 'block_size',
+            'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts'
+        ]
+        writer.writerow(header)
         
         # Write data
         for sample_id, sample in enumerate(training_samples):
             block_size = sample['block_size']
-            for feature in sample['features']:
-                confidence, entropy, position, token_id, token_text = feature
-                writer.writerow([sample_id, confidence, entropy, position, token_id, token_text, block_size])
+            # Each sample now has exactly one feature row
+            if sample['features']:  # Check if features exist
+                feature = sample['features'][0]  # Get the single feature row
+                if len(feature) >= 17:  # Full feature row
+                    (confidence, entropy, position, token_id, token_text, 
+                     conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
+                     conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
+                     top8_conf_min, next8_conf_min) = feature
+                else:  # Fallback for incomplete rows
+                    confidence, entropy, position = feature[:3]
+                    token_id, token_text = feature[3:5] if len(feature) > 4 else (None, None)
+                    (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
+                     conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
+                     top8_conf_min, next8_conf_min) = [0.0] * 12
+                
+                writer.writerow([
+                    sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
+                    round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
+                    round(mean_confidence, 4), round(mean_entropy, 4),
+                    round(conf_std, 4), round(entropy_std, 4), round(conf_1, 4), 
+                    round(top4_conf_min, 4), round(next4_conf_min, 4),
+                    round(top8_conf_min, 4), round(next8_conf_min, 4), block_size,
+                    sample.get('full_confidence_list', []),
+                    sample.get('full_entropy_list', []),
+                    sample.get('full_token_ids', []),
+                    sample.get('full_token_texts', [])
+                ])
+            else:
+                # No features available, write a default row
+                writer.writerow([sample_id, 0.0, 0.0, 0, None, None] + [0.0] * 12 + [1, [], [], [], []])
     
     print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
     print(f"  📄 JSON: {json_output_path}")
