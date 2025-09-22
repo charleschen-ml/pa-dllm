@@ -23,8 +23,8 @@ def plot_features_vs_labels():
     print(f"📊 Loading data from: {csv_path}")
     df = pd.read_csv(csv_path)
 
-    # manual experiment: truncate to only first 4 lines
-    df = df.head(9)
+    # manual experiment: filter by answer_found
+    df = df[df['answer_found'] == False]
     
     print(f"✅ Loaded {len(df)} samples")
     print(f"Columns: {list(df.columns)}")
