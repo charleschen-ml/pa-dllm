@@ -9,7 +9,7 @@ Migrated from Google Colab to local server environment.
 Accounts
 """
 
-# Set HuggingFace cache directories to local project folder
+# Set HuggingFace cache directories to local project cache
 import os
 os.environ["HF_HOME"] = "./cache"
 os.environ["HF_DATASETS_CACHE"] = "./cache/datasets"
@@ -23,7 +23,13 @@ import os
 # Get token from environment variable (safer)
 HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
 if HUGGINGFACE_TOKEN:
-    login(token=HUGGINGFACE_TOKEN)
+    try:
+        login(token=HUGGINGFACE_TOKEN)
+        print("✅ Successfully logged into HuggingFace")
+    except Exception as e:
+        print(f"⚠️ HuggingFace login failed: {e}")
+        print("Continuing without HuggingFace authentication...")
+        print("Get a valid token from: https://huggingface.co/settings/tokens")
 else:
     print("Warning: HUGGINGFACE_TOKEN not set. Set it with: export HUGGINGFACE_TOKEN=your_token_here")
     print("Get your token from: https://huggingface.co/settings/tokens")

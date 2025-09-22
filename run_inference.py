@@ -3,7 +3,7 @@
 Run Inference Script - Load saved model and run inference
 """
 
-# Set HuggingFace cache directories to local project folder
+# Set HuggingFace cache directories to local project cache
 import os
 os.environ["HF_HOME"] = "./cache"
 os.environ["HF_DATASETS_CACHE"] = "./cache/datasets"
@@ -19,7 +19,7 @@ importlib.reload(inference)
 
 # Load inference functions
 from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference, generate_one_sample
-from inference import augment_one_sample
+from inference import augment_one_sample, load_gsm8k
 from generate import generate_vanilla, generate_custom
 
 # FASTEST: Load model weights and recreate architecture
@@ -49,59 +49,64 @@ if torch.cuda.is_available():
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
 
-# Set device - use GPU 1 instead of 0 (GPU 0 is being used by another user)
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+# Set device - use the available GPU (H100 is on cuda:0)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-# Load model architecture on CPU first to avoid memory conflicts
+# Load model architecture first (empty model)
+print("Loading model architecture...")
 model = AutoModel.from_pretrained(
     model_args.model_name_or_path,
     trust_remote_code=model_args.trust_remote_code,
-    torch_dtype=torch.bfloat16,  # Use bfloat16 like original
-    device_map=None,  # Load on CPU first
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
     low_cpu_mem_usage=True
 )
+print("✅ Model architecture loaded")
 
-# Load saved weights (fast) - keep on CPU
+# Load saved weights (much faster than downloading)
+print("Loading saved model weights...")
 state_dict = torch.load('./cache/model_weights.pt', weights_only=True, map_location='cpu')
-
-# Load state_dict while model is still on CPU
 model.load_state_dict(state_dict)
 
-# Now move to GPU if available (after weights are loaded)
+# Now move to GPU
 model = model.to(device).eval()
+print("✅ Model loaded from saved weights (fast)")
 
 # Load tokenizer
 tokenizer = AutoTokenizer.from_pretrained('./cache/tokenizer/')
 
 print(f"✅ Loaded model: {model_args.model_name_or_path} on {device}")
+print(f"📁 Cache location: ./cache/")
 
 # Memory usage info
 if torch.cuda.is_available():
     allocated = torch.cuda.memory_allocated() / 1024**3
     reserved = torch.cuda.memory_reserved() / 1024**3
-    print(".1f")
-    print(".1f")
+    print(f"GPU Memory - Allocated: {allocated:.1f}GB, Reserved: {reserved:.1f}GB")
 
 ########################################################
 # Create dataset of questions answered correctly
 ########################################################
-# # Run batch inference
-# df = run_inference_batch(
-#     model=model,
-#     tokenizer=tokenizer,
-#     device=device,
-#     model_args=model_args,
-#     input_csv_path="./data/gsm8k.csv",
-#     output_csv_path="./data/gsm8k_output.csv",
-#     steps=32,
-#     gen_length=32,
-#     block_length=1
-# )
-# # Load df from csv
-# df = pd.read_csv("./data/gsm8k_output.csv")
-# # Calculate score
-# correct_path = "./data/gsm8k_correct.csv"
-# calculate_score(df, correct_path)
+# Load gsm8k
+df = load_gsm8k(10)
+
+# Run batch inference
+df = run_inference_batch(
+    model=model,
+    tokenizer=tokenizer,
+    device=device,
+    model_args=model_args,
+    input_csv_path="./data/gsm8k.csv",
+    output_csv_path="./data/gsm8k_output.csv",
+    steps=32,
+    gen_length=32,
+    block_length=1
+)
+# Load df from csv
+df = pd.read_csv("./data/gsm8k_output.csv")
+# Calculate score
+correct_path = "./data/gsm8k_correct.csv"
+calculate_score(df, correct_path)
 
 ########################################################
 # Load single prompt
@@ -157,7 +162,6 @@ training_samples = augment_one_sample(
     steps=steps,
     correct_answer=correct_answer
 )
-
 ########################################################
 # Augment multiple samples
 ########################################################
@@ -247,3 +251,4 @@ training_samples = augment_one_sample(
 # print(f"  📄 JSON: {json_output_path}")
 # print(f"  📊 CSV:  {csv_output_path}")
 # print(f"  📈 Samples per question: {len(all_training_samples) / len(df):.1f} avg")
+
