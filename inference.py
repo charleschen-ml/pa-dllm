@@ -920,6 +920,17 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             correct_answer=correct_answer,
         )
         if sample:
+            current_block_size = sample.get('block_size', 1)
+            
+            # Check if model has figured out the answer
+            answer_found = (current_block_size == (gen_length - curr_pos))
+            sample['answer_found'] = answer_found
+            
+            if answer_found:
+                print(f"🎯 Answer found at curr_pos={curr_pos}!")
+                print(f"   Block size {current_block_size} == remaining length {gen_length - curr_pos}")
+                print(f"   Model wants to decode all remaining tokens at once")
+            
             training_samples.append(sample)
             
             # Check for <eot_id> token in the generated tokens
@@ -958,7 +969,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
             'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
             'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
-            'top8_conf_min', 'next8_conf_min', 'block_size',
+            'top8_conf_min', 'next8_conf_min', 'block_size', 'answer_found',
             'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts'
         ]
         writer.writerow(header)
@@ -988,7 +999,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
                     round(mean_confidence, 4), round(mean_entropy, 4),
                     round(conf_std, 4), round(entropy_std, 4), round(conf_1, 4), 
                     round(top4_conf_min, 4), round(next4_conf_min, 4),
-                    round(top8_conf_min, 4), round(next8_conf_min, 4), block_size,
+                    round(top8_conf_min, 4), round(next8_conf_min, 4), block_size, sample.get('answer_found', False),
                     sample.get('full_confidence_list', []),
                     sample.get('full_entropy_list', []),
                     sample.get('full_token_ids', []),
@@ -996,7 +1007,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
                 ])
             else:
                 # No features available, write a default row
-                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 12 + [1, [], [], [], []])
+                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], []])
     
     print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
     print(f"  📄 JSON: {json_output_path}")
