@@ -15,7 +15,8 @@ def plot_features_vs_labels():
     os.makedirs('./output', exist_ok=True)
     
     # Load the training data
-    csv_path = './data/sft_training_samples_greedy.csv'
+    # csv_path = './data/sft_training_samples_greedy.csv' # single augmentation
+    csv_path = './data/sft_training_samples_multi_greedy.csv' # multi augmentation
     if not os.path.exists(csv_path):
         print(f"❌ Data file not found: {csv_path}")
         return
