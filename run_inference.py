@@ -160,7 +160,8 @@ training_samples = augment_one_sample(
     gen_length=gen_length,
     base_block_length=base_block_length,
     steps=steps,
-    correct_answer=correct_answer
+    correct_answer=correct_answer,
+    break_after_answer_found=True  # Set to False to continue augmentation after answer found
 )
 ########################################################
 # Augment multiple samples

@@ -864,7 +864,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 
     return training_sample
 
-def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None):
+def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True):
     """
     Generate training samples by collecting confidence/entropy data at different curr_pos values,
     and save them to JSON and CSV files.
@@ -879,6 +879,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
         base_block_length: Base block length (default: 2)
         steps: Number of steps (default: 16)
         correct_answer: Expected correct answer for checking correctness (optional)
+        break_after_answer_found: If True, stop augmentation after first answer_found=True (default: True)
     
     Returns:
         List of training samples, each containing features and block_size
@@ -930,8 +931,17 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
                 print(f"🎯 Answer found at curr_pos={curr_pos}!")
                 print(f"   Block size {current_block_size} == remaining length {gen_length - curr_pos}")
                 print(f"   Model wants to decode all remaining tokens at once")
-            
-            training_samples.append(sample)
+                
+                # Add this sample first, then decide whether to break
+                training_samples.append(sample)
+                
+                if break_after_answer_found:
+                    print(f"🛑 Breaking data augmentation (break_after_answer_found=True)")
+                    break
+                else:
+                    print(f"➡️  Continuing data augmentation (break_after_answer_found=False)")
+            else:
+                training_samples.append(sample)
             
             # Check for <eot_id> token in the generated tokens
             if eot_token_id is not None and sample.get('full_token_ids'):
