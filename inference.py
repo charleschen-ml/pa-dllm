@@ -789,9 +789,13 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             # Get additional features for this position (calculated from curr_pos perspective)
             additional_feats = stored_additional_features.get(curr_pos, {}) if stored_additional_features else {}
             
+            # Calculate position_relative (position / gen_length) with 4 decimal places
+            position_relative = round(position / gen_length, 4)
+            
             # Create comprehensive feature vector
             feature_row = [
                 confidence, entropy, position, token_id, token_text,
+                position_relative,
                 additional_feats.get('conf_0', 0.0),
                 additional_feats.get('entropy_0', 0.0), 
                 additional_feats.get('top1_margin', 0.0),
@@ -808,8 +812,10 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             
             features.append(feature_row)
         else:
+            # Calculate position_relative for default row too
+            position_relative = round(position / gen_length, 4)
             # Default feature row with zeros for missing data
-            default_row = [0.0, 0.0, position, None, None] + [0.0] * 12  # 12 additional features
+            default_row = [0.0, 0.0, position, None, None, position_relative] + [0.0] * 12  # 12 additional features
             features.append(default_row)
     
     # Create training sample with full lists preserved
@@ -865,6 +871,17 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
     """
     print(f"\n🔄 Augmenting sample with gen_length={gen_length}, base_block_length={base_block_length}, steps={steps}")
     
+    # Get the token ID for <eot_id> to check for early termination
+    eot_token_id = 126348  # Known <eot_id> token ID
+    print(f"Using EOT token ID: {eot_token_id}")
+    
+    # Verify the token ID is correct
+    try:
+        token_text = tokenizer.decode([eot_token_id])
+        print(f"Token ID {eot_token_id} decodes to: '{token_text}'")
+    except Exception as e:
+        print(f"Warning: Could not decode token ID {eot_token_id}: {e}")
+    
     # Collect training samples
     training_samples = []
     manual_settings = {}
@@ -890,6 +907,25 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
         )
         if sample:
             training_samples.append(sample)
+            
+            # Check for <eot_id> token in the generated tokens
+            if eot_token_id is not None and sample.get('full_token_ids'):
+                full_token_ids = sample.get('full_token_ids', [])
+                full_token_texts = sample.get('full_token_texts', [])
+                
+                # Check if we've generated an <eot_id> token at ANY position up to curr_pos
+                for pos in range(min(curr_pos + 1, len(full_token_ids))):
+                    if full_token_ids[pos] == eot_token_id:
+                        token_text = full_token_texts[pos] if pos < len(full_token_texts) else "unknown"
+                        print(f"🛑 Found <eot_id> token (ID: {eot_token_id}, text: '{token_text}') at position {pos}, stopping data augmentation")
+                        print(f"   Generated tokens so far: {full_token_ids[:pos+1]}")
+                        print(f"   Token texts: {full_token_texts[:pos+1]}")
+                        break
+                else:
+                    # No <eot_id> found, continue
+                    continue
+                # If we found <eot_id>, break out of the main loop
+                break
     
     # Save to JSON file
     import json
@@ -906,7 +942,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
         # Write header
         header = [
             'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
-            'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+            'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
             'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
             'top8_conf_min', 'next8_conf_min', 'block_size',
             'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts'
@@ -919,21 +955,22 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             # Each sample now has exactly one feature row
             if sample['features']:  # Check if features exist
                 feature = sample['features'][0]  # Get the single feature row
-                if len(feature) >= 17:  # Full feature row
-                    (confidence, entropy, position, token_id, token_text, 
+                if len(feature) >= 18:  # Full feature row (now has 18 features with position_relative)
+                    (confidence, entropy, position, token_id, token_text, position_relative,
                      conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
                      conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
                      top8_conf_min, next8_conf_min) = feature
                 else:  # Fallback for incomplete rows
                     confidence, entropy, position = feature[:3]
                     token_id, token_text = feature[3:5] if len(feature) > 4 else (None, None)
+                    position_relative = feature[5] if len(feature) > 5 else 0.0
                     (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
                      conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
                      top8_conf_min, next8_conf_min) = [0.0] * 12
                 
                 writer.writerow([
                     sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
-                    round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
+                    round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
                     round(mean_confidence, 4), round(mean_entropy, 4),
                     round(conf_std, 4), round(entropy_std, 4), round(conf_1, 4), 
                     round(top4_conf_min, 4), round(next4_conf_min, 4),
@@ -945,7 +982,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
                 ])
             else:
                 # No features available, write a default row
-                writer.writerow([sample_id, 0.0, 0.0, 0, None, None] + [0.0] * 12 + [1, [], [], [], []])
+                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 12 + [1, [], [], [], []])
     
     print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
     print(f"  📄 JSON: {json_output_path}")
