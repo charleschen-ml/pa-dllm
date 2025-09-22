@@ -613,10 +613,13 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     if manual_settings is None:
         manual_settings = {}  # {block_position: block_size_value}
     
-    # Single token greedy search: optimize only the first position
-    num_blocks = gen_length // base_block_length
+    # We'll use the confidence values from generate_custom instead of reimplementing
+    print(f"\n=== Using confidence from generate_custom for curr_pos={curr_pos} ===")
+    autoregressive_confidence = []
+    autoregressive_entropy = []
 
-    # position = 0  # Only optimize the first position
+    # Single token greedy search: optimize only the specified position
+    num_blocks = gen_length // base_block_length
     position = curr_pos # optimize the position specified by curr_pos
 
     print(f"\n=== Optimizing position {position} (single token search) ===")
@@ -625,8 +628,6 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     optimal_out = None  # Store optimal token IDs
     stored_ar_tokens = None  # Store AR context tokens from first call
     stored_additional_features = None  # Store additional confidence metrics from first call
-    stored_initial_confidence = None  # Store full confidence list
-    stored_initial_entropy = None  # Store full entropy list
     
     for sweep_value in range(1, gen_length + 1):  # Try values 1 to gen_length
         current_settings = manual_settings.copy()
@@ -658,13 +659,23 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         )
         first_correct_steps.append(first_correct_step)
 
-        # Store AR context tokens, additional features, and full confidence/entropy lists from the first call
+        # Store AR context tokens, additional features, and confidence from the first call
         if stored_ar_tokens is None and ar_context_tokens is not None:
             stored_ar_tokens = ar_context_tokens.clone()
             stored_additional_features = additional_features.copy() if additional_features else {}
-            stored_initial_confidence = initial_confidence.copy() if initial_confidence else []
-            stored_initial_entropy = initial_entropy.copy() if initial_entropy else []
-            print(f"📝 Stored AR context tokens, additional features, and full confidence/entropy lists for analysis")
+            
+            # Extract the forward-looking confidence from initial_confidence
+            if initial_confidence and len(initial_confidence) > curr_pos:
+                autoregressive_confidence = initial_confidence[curr_pos:]
+                autoregressive_entropy = initial_entropy[curr_pos:] if initial_entropy and len(initial_entropy) > curr_pos else []
+                print(f"📝 Extracted {len(autoregressive_confidence)} forward-looking confidence values from curr_pos={curr_pos}")
+                print(f"    Confidence values: {autoregressive_confidence[:5]}...")  # Show first 5
+            else:
+                autoregressive_confidence = []
+                autoregressive_entropy = []
+                print(f"⚠️ No confidence values available from generate_custom")
+            
+            print(f"📝 Stored AR context tokens, additional features, and confidence for analysis")
 
         # Early exit: if no correct answer was ever found (inf), keep last good size and skip remaining sweeps
         if first_correct_step == float('inf'):
@@ -764,16 +775,18 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     # - Comparative: top4/8_conf_min (best tokens), next4/8_conf_min (sequential tokens)
     # This allows analysis of which tokens are suitable for parallel vs sequential decoding.
     
-    # Extract features for the NEXT token after curr_pos (only one feature row per curr_pos)
+    # Extract features for the current position curr_pos (only one feature row per curr_pos)
     features = []
-    if stored_initial_confidence is not None and stored_initial_entropy is not None and curr_pos < gen_length - 1:
-        # The position we're analyzing is curr_pos + 1 (the immediate next token)
-        position = curr_pos + 1
-        idx = position - 1  # 0-indexed position in arrays (since position is 1-indexed)
+    if len(autoregressive_confidence) > 0 and len(autoregressive_entropy) > 0:
+        # The position we're analyzing is curr_pos (the current token to be decoded)
+        position = curr_pos
         
-        if idx < len(stored_initial_confidence) and idx < len(stored_initial_entropy):
-            confidence = stored_initial_confidence[idx]
-            entropy = stored_initial_entropy[idx]
+        # In autoregressive_confidence, index 0 corresponds to position curr_pos
+        confidence_idx = 0  # Index in autoregressive confidence list for curr_pos
+        
+        if confidence_idx < len(autoregressive_confidence) and confidence_idx < len(autoregressive_entropy):
+            confidence = autoregressive_confidence[confidence_idx]
+            entropy = autoregressive_entropy[confidence_idx]
             
             # Get token and token_id from AR context + top-1 predictions
             token_id = None
@@ -781,7 +794,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             if stored_ar_tokens is not None:
                 # Extract token_id from the AR context + top-1 predictions
                 gen_start_idx = input_ids.shape[1]  # Start of generation
-                token_pos_in_gen = idx  # Position within generation
+                token_pos_in_gen = curr_pos  # Position within generation
                 if gen_start_idx + token_pos_in_gen < stored_ar_tokens.shape[1]:
                     token_id = stored_ar_tokens[0, gen_start_idx + token_pos_in_gen].item()
                     token_text = tokenizer.decode([token_id], skip_special_tokens=False)
@@ -835,11 +848,12 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
                 full_token_ids.append(None)
                 full_token_texts.append(None)
     
+    # Use the autoregressive confidence/entropy lists we calculated earlier
     training_sample = {
         "features": features,
         "block_size": best_value if best_value is not None else 1,
-        "full_confidence_list": stored_initial_confidence if stored_initial_confidence else [],
-        "full_entropy_list": stored_initial_entropy if stored_initial_entropy else [],
+        "full_confidence_list": autoregressive_confidence,  # Forward-looking confidence from curr_pos
+        "full_entropy_list": autoregressive_entropy,        # Forward-looking entropy from curr_pos
         "full_token_ids": full_token_ids,
         "full_token_texts": full_token_texts
     }

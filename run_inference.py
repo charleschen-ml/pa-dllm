@@ -87,26 +87,26 @@ if torch.cuda.is_available():
 ########################################################
 # Create dataset of questions answered correctly
 ########################################################
-# Load gsm8k
-df = load_gsm8k(10)
+# # Load gsm8k
+# df = load_gsm8k(10)
 
-# Run batch inference
-df = run_inference_batch(
-    model=model,
-    tokenizer=tokenizer,
-    device=device,
-    model_args=model_args,
-    input_csv_path="./data/gsm8k.csv",
-    output_csv_path="./data/gsm8k_output.csv",
-    steps=32,
-    gen_length=32,
-    block_length=1
-)
-# Load df from csv
-df = pd.read_csv("./data/gsm8k_output.csv")
-# Calculate score
-correct_path = "./data/gsm8k_correct.csv"
-calculate_score(df, correct_path)
+# # Run batch inference
+# df = run_inference_batch(
+#     model=model,
+#     tokenizer=tokenizer,
+#     device=device,
+#     model_args=model_args,
+#     input_csv_path="./data/gsm8k.csv",
+#     output_csv_path="./data/gsm8k_output.csv",
+#     steps=32,
+#     gen_length=32,
+#     block_length=1
+# )
+# # Load df from csv
+# df = pd.read_csv("./data/gsm8k_output.csv")
+# # Calculate score
+# correct_path = "./data/gsm8k_correct.csv"
+# calculate_score(df, correct_path)
 
 ########################################################
 # Load single prompt
@@ -117,8 +117,8 @@ instr = "Solve this problem and box your final answer:\n"
 question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?\n"
 correct_answer = 72
 
-# question = df.iloc[0]['question'] # load the first question in df
-# correct_answer = int(df.iloc[0]['answer_numerical'])  # extract the correct numerical answer
+# question = df.iloc[1]['question'] # load the first question in df
+# correct_answer = int(df.iloc[1]['answer_numerical'])  # extract the correct numerical answer
 
 prompt = instr + question
 
