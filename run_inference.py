@@ -167,6 +167,10 @@ if torch.cuda.is_available():
 ########################################################
 # Augment multiple samples
 ########################################################
+import time
+print("🚀 Starting augment_multiple_samples...")
+start_time = time.time()
+
 all_training_samples = augment_multiple_samples(
     model=model,
     tokenizer=tokenizer,
@@ -182,4 +186,12 @@ all_training_samples = augment_multiple_samples(
     output_csv_path="./data/sft_training_samples_multi_greedy.csv",
     verbose=False  # Set to True to see detailed progress logs
 )
+
+end_time = time.time()
+elapsed_time = end_time - start_time
+print(f"\n⏱️  TIMING REPORT:")
+print(f"  📊 Total samples generated: {len(all_training_samples)}")
+print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
+print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
 

@@ -809,10 +809,9 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             # Calculate position_relative (position / gen_length) with 4 decimal places
             position_relative = round(position / gen_length, 4)
             
-            # Create comprehensive feature vector
+            # Create comprehensive feature vector (removed redundant: confidence, entropy, position)
             feature_row = [
-                confidence, entropy, position, token_id, token_text,
-                position_relative,
+                token_id, token_text, position_relative,
                 additional_feats.get('conf_0', 0.0),
                 additional_feats.get('entropy_0', 0.0), 
                 additional_feats.get('top1_margin', 0.0),
@@ -831,8 +830,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         else:
             # Calculate position_relative for default row too
             position_relative = round(position / gen_length, 4)
-            # Default feature row with zeros for missing data
-            default_row = [0.0, 0.0, position, None, None, position_relative] + [0.0] * 12  # 12 additional features
+            # Default feature row with zeros for missing data (removed redundant features)
+            default_row = [None, None, position_relative] + [0.0] * 12  # 12 additional features
             features.append(default_row)
     
     # Create training sample with full lists preserved
@@ -979,10 +978,10 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
     with open(csv_output_path, "w", newline='') as f:
         writer = csv.writer(f)
         
-        # Write header
+        # Write header (removed redundant features: confidence, entropy, position)
         header = [
-            'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
-            'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+            'sample_id', 'token_id', 'token_text', 'position_relative', 
+            'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
             'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
             'top8_conf_min', 'next8_conf_min', 'block_size', 'answer_found',
             'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts'
@@ -995,22 +994,21 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             # Each sample now has exactly one feature row
             if sample['features']:  # Check if features exist
                 feature = sample['features'][0]  # Get the single feature row
-                if len(feature) >= 18:  # Full feature row (now has 18 features with position_relative)
-                    (confidence, entropy, position, token_id, token_text, position_relative,
+                if len(feature) >= 15:  # Full feature row (now has 15 features without redundant ones)
+                    (token_id, token_text, position_relative,
                      conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
                      conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
                      top8_conf_min, next8_conf_min) = feature
                 else:  # Fallback for incomplete rows
-                    confidence, entropy, position = feature[:3]
-                    token_id, token_text = feature[3:5] if len(feature) > 4 else (None, None)
-                    position_relative = feature[5] if len(feature) > 5 else 0.0
+                    token_id, token_text = feature[:2] if len(feature) > 1 else (None, None)
+                    position_relative = feature[2] if len(feature) > 2 else 0.0
                     (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
                      conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
                      top8_conf_min, next8_conf_min) = [0.0] * 12
                 
                 writer.writerow([
-                    sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
-                    round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
+                    sample_id, token_id, token_text, round(position_relative, 4), 
+                    round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
                     round(mean_confidence, 4), round(mean_entropy, 4),
                     round(conf_std, 4), round(entropy_std, 4), round(conf_1, 4), 
                     round(top4_conf_min, 4), round(next4_conf_min, 4),
@@ -1022,7 +1020,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
                 ])
             else:
                 # No features available, write a default row
-                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], []])
+                writer.writerow([sample_id, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], []])
     
     print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
     print(f"  📄 JSON: {json_output_path}")
@@ -1202,10 +1200,10 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
     with open(output_csv_path, "w", newline='') as f:
         writer = csv.writer(f)
         
-        # Write header (same as augment_one_sample)
+        # Write header (removed redundant features: confidence, entropy, position)
         header = [
-            'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
-            'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+            'sample_id', 'token_id', 'token_text', 'position_relative', 
+            'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
             'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
             'top8_conf_min', 'next8_conf_min', 'block_size', 'answer_found',
             'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts',
@@ -1223,22 +1221,22 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
             features = sample.get('features', [])
             if features:
                 for feature in features:
-                    if len(feature) >= 13:  # Full feature set
-                        confidence, entropy, position, token_id, token_text, position_relative = feature[:6]
+                    if len(feature) >= 15:  # Full feature set (removed redundant features)
+                        token_id, token_text, position_relative = feature[:3]
                         (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
                          conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
-                         top8_conf_min, next8_conf_min) = feature[6:18] if len(feature) >= 18 else feature[6:6+12]
+                         top8_conf_min, next8_conf_min) = feature[3:15]
                     else:
                         # Handle incomplete features
-                        confidence, entropy, position = feature[:3]
-                        token_id, token_text, position_relative = feature[3:6] if len(feature) > 3 else [None, None, 0.0]
+                        token_id, token_text = feature[:2] if len(feature) > 1 else [None, None]
+                        position_relative = feature[2] if len(feature) > 2 else 0.0
                         (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
                          conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
                          top8_conf_min, next8_conf_min) = [0.0] * 12
                     
                     writer.writerow([
-                        sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
-                        round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
+                        sample_id, token_id, token_text, round(position_relative, 4), 
+                        round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
                         round(mean_confidence, 4), round(mean_entropy, 4),
                         round(conf_std, 4), round(entropy_std, 4), round(conf_1, 4), 
                         round(top4_conf_min, 4), round(next4_conf_min, 4),
@@ -1251,7 +1249,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
                     ])
             else:
                 # No features available, write a default row
-                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], [], question_id, question])
+                writer.writerow([sample_id, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], [], question_id, question])
 
     print(f"\n✅ Done. Saved {len(all_training_samples)} samples to:")
     print(f"  📄 JSON: {output_json_path}")

@@ -31,9 +31,9 @@ def plot_features_vs_labels():
     print(f"Columns: {list(df.columns)}")
     
     # Define the features to plot (excluding non-numeric and identifier columns)
+    # Removed redundant features: entropy (use entropy_0), confidence (use conf_0), position (use position_relative)
     feature_columns = [
-        'confidence', 'entropy', 'position', 'position_relative',
-        'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+        'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
         'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
         'top8_conf_min', 'next8_conf_min'
     ]
