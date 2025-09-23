@@ -915,7 +915,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
     training_samples = []
     manual_settings = {}
     
-    for curr_pos in range(gen_length):
+    for curr_pos in tqdm(range(gen_length), desc="Processing positions", unit="pos", leave=False):
         if verbose:
             print(f"\n=== curr_pos = {curr_pos} ===")
         if curr_pos > 0:  # empty for the first iteration
