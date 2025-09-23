@@ -423,7 +423,7 @@ def calculate_score(df, correct_csv_path="correct_questions.csv"):
     print(f"Correct questions saved to {correct_csv_path}")
 
 # Run Greedy inference
-def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
+def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, verbose=True):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     Greedy search: optimize each position one by one
@@ -482,7 +482,8 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
                 block_sizes=block_sizes,
                 temperature=0.,
                 cfg_scale=0.,
-                remasking='low_confidence'
+                remasking='low_confidence',
+                verbose=verbose
             )
             first_correct_steps.append(first_correct_step)
 
@@ -563,7 +564,8 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
                 block_sizes=final_block_sizes,
                 temperature=0.,
                 cfg_scale=0.,
-                remasking='low_confidence'
+                remasking='low_confidence',
+                verbose=verbose
             )
 
 
@@ -580,7 +582,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
     return
 
 # Generate one sample for SFT dataset
-def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0, manual_settings=None, correct_answer=None):
+def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0, manual_settings=None, correct_answer=None, verbose=True):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     
@@ -655,7 +657,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             cfg_scale=0.,
             remasking='low_confidence',
             curr_pos=curr_pos,  # Pass curr_pos to capture confidence/entropy at the right block
-            correct_answer=correct_answer
+            correct_answer=correct_answer,
+            verbose=verbose
         )
         first_correct_steps.append(first_correct_step)
 
@@ -754,7 +757,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
                 block_sizes=final_block_sizes,
                 temperature=0.,
                 cfg_scale=0.,
-                remasking='low_confidence'
+                remasking='low_confidence',
+                verbose=verbose
             )
 
     # store the input-ouput pair in this format (e.g. curr_pos=4):
@@ -864,7 +868,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 
     return training_sample
 
-def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True):
+def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, verbose=True):
     """
     Generate training samples by collecting confidence/entropy data at different curr_pos values,
     and save them to JSON and CSV files.
@@ -919,6 +923,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             curr_pos=curr_pos,
             manual_settings=manual_settings,
             correct_answer=correct_answer,
+            verbose=verbose,
         )
         if sample:
             current_block_size = sample.get('block_size', 1)
@@ -1111,7 +1116,7 @@ def main(script_args, model_args, inference_args):
 def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num_questions=2, 
                            gen_length=32, base_block_length=1, steps=32, break_after_answer_found=True,
                            output_json_path="./data/sft_training_samples_multi_greedy.json",
-                           output_csv_path="./data/sft_training_samples_multi_greedy.csv"):
+                           output_csv_path="./data/sft_training_samples_multi_greedy.csv", verbose=True):
     """
     Process multiple questions from a CSV file and generate training samples for each.
     
@@ -1173,7 +1178,8 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
             base_block_length=base_block_length,
             steps=steps,
             correct_answer=correct_answer,
-            break_after_answer_found=break_after_answer_found
+            break_after_answer_found=break_after_answer_found,
+            verbose=verbose
         )
         
         # Add question metadata to each sample

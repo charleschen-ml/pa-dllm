@@ -270,7 +270,7 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
 
 @ torch.no_grad()
 def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_sizes=None, temperature=0.,
-                   cfg_scale=0., remasking='low_confidence', mask_id=126336, curr_pos=0, correct_answer=None):
+                   cfg_scale=0., remasking='low_confidence', mask_id=126336, curr_pos=0, correct_answer=None, verbose=True):
     '''
     Args:
         model: Mask predictor.
@@ -604,7 +604,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")
 
     # Print per-step confidence breakdown at the end
-    if per_step_logs:
+    if per_step_logs and verbose:
         print(f"\n{'='*60}")
         print("PER-STEP CONFIDENCE BREAKDOWN (decoded | remaining)")
         print(f"{'='*60}")

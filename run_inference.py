@@ -179,6 +179,7 @@ all_training_samples = augment_multiple_samples(
     steps=32,
     break_after_answer_found=True,
     output_json_path="./data/sft_training_samples_multi_greedy.json",
-    output_csv_path="./data/sft_training_samples_multi_greedy.csv"
+    output_csv_path="./data/sft_training_samples_multi_greedy.csv",
+    verbose=False  # Set to True to see detailed progress logs
 )
 
