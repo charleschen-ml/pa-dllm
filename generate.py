@@ -359,7 +359,8 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
 
         # Capture confidence and entropy at curr_pos block (before processing steps)
         if num_block == curr_pos and initial_confidence is None:
-            print(f"\n🎯 CAPTURING confidence/entropy at block {num_block} (curr_pos={curr_pos})")
+            if verbose:
+                print(f"\n🎯 CAPTURING confidence/entropy at block {num_block} (curr_pos={curr_pos})")
             
             # Get current logits to calculate confidence/entropy
             if cfg_scale > 0.:
@@ -374,23 +375,27 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             
             # Show current state of generation
             current_decoded = tokenizer.decode(x[0, prompt.shape[1]:], skip_special_tokens=True)
-            print(f"📝 Current generation state: '{current_decoded}'")
+            if verbose:
+                print(f"📝 Current generation state: '{current_decoded}'")
             
             # Count how many tokens are still masked
             gen_start = prompt.shape[1]
             gen_end = gen_start + gen_length
             masked_count = (x[0, gen_start:gen_end] == mask_id).sum().item()
             decoded_count = gen_length - masked_count
-            print(f"🎭 Tokens decoded so far: {decoded_count}/{gen_length} (masked: {masked_count})")
+            if verbose:
+                print(f"🎭 Tokens decoded so far: {decoded_count}/{gen_length} (masked: {masked_count})")
             
             # CAPTURE TOP-1 TOKENS after AR context is built (for parallel vs sequential analysis)
-            print(f"🔍 CAPTURING top-1 tokens after AR context (blocks 0 to {curr_pos-1} processed)")
+            if verbose:
+                print(f"🔍 CAPTURING top-1 tokens after AR context (blocks 0 to {curr_pos-1} processed)")
             top1_tokens = torch.argmax(logits, dim=-1)  # Get top-1 predictions for all positions
             ar_context_tokens = x.clone()  # Start with current state (AR context + masks)
             ar_context_tokens[0, gen_start:gen_end] = top1_tokens[0, gen_start:gen_end]  # Fill with top-1 predictions
             
             ar_tokens_text = tokenizer.decode(ar_context_tokens[0, prompt.shape[1]:], skip_special_tokens=True)
-            print(f"📝 AR context + top-1 predictions: '{ar_tokens_text}'")
+            if verbose:
+                print(f"📝 AR context + top-1 predictions: '{ar_tokens_text}'")
             
             # Calculate comprehensive confidence metrics
             p = F.softmax(logits, dim=-1)  # Full softmax probabilities
@@ -471,10 +476,11 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                 }
             
             # Show sample of captured values
-            print(f"📊 Sample confidence values: {initial_confidence[:5]}...")
-            print(f"📈 Sample entropy values: {initial_entropy[:5]}...")
-            print(f"✅ Captured {len(initial_confidence)} confidence/entropy pairs")
-            print("=" * 60)
+            if verbose:
+                print(f"📊 Sample confidence values: {initial_confidence[:5]}...")
+                print(f"📈 Sample entropy values: {initial_entropy[:5]}...")
+                print(f"✅ Captured {len(initial_confidence)} confidence/entropy pairs")
+                print("=" * 60)
 
         # initialize boolean mask to all <mask> in current block
         block_mask_index = (x[:, prompt.shape[1] + block_start: prompt.shape[1] + block_end] == mask_id)
@@ -601,7 +607,8 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                     first_correct_step = total_step
             # print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
 
-    print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")
+    if verbose:
+        print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")
 
     # Print per-step confidence breakdown at the end
     if per_step_logs and verbose:
@@ -633,6 +640,7 @@ def main():
     input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
 
     out = generate(model, input_ids, steps=128, gen_length=128, block_length=32, temperature=0., cfg_scale=0., remasking='low_confidence')
+    # This print is in main section, keep it for debugging
     print(tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
 
 

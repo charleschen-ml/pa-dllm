@@ -529,11 +529,12 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
             min_step = best_step
     
     # Print the list of first_correct_steps and find the minimum
-    print(f"\nFirst correct steps: {first_correct_steps}")
-    print(f"Minimum first correct step: {min_step}")
-    print(f"Optimal block sizes: {optimal_block_sizes}")
-    print(f"\nOptimal output text:")
-    print(optimal_output_text)
+    if verbose:
+        print(f"\nFirst correct steps: {first_correct_steps}")
+        print(f"Minimum first correct step: {min_step}")
+        print(f"Optimal block sizes: {optimal_block_sizes}")
+        print(f"\nOptimal output text:")
+        print(optimal_output_text)
     
     # Show detailed confidence tracking for the optimal configuration
     if optimal_block_sizes is not None:
@@ -602,7 +603,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 
     # debug
     inputs_decoded = tokenizer.decode(input_ids[0], skip_special_tokens=True)
-    print(f"decoded inputs=\n{inputs_decoded}")
+    if verbose:
+        print(f"decoded inputs=\n{inputs_decoded}")
 
     # custom generate with block size as list
     first_correct_steps = []
@@ -616,7 +618,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         manual_settings = {}  # {block_position: block_size_value}
     
     # We'll use the confidence values from generate_custom instead of reimplementing
-    print(f"\n=== Using confidence from generate_custom for curr_pos={curr_pos} ===")
+    if verbose:
+        print(f"\n=== Using confidence from generate_custom for curr_pos={curr_pos} ===")
     autoregressive_confidence = []
     autoregressive_entropy = []
 
@@ -624,7 +627,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     num_blocks = gen_length // base_block_length
     position = curr_pos # optimize the position specified by curr_pos
 
-    print(f"\n=== Optimizing position {position} (single token search) ===")
+    if verbose:
+        print(f"\n=== Optimizing position {position} (single token search) ===")
     best_value = None
     best_step = float('inf')
     optimal_out = None  # Store optimal token IDs
@@ -644,7 +648,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         if block_sizes is None:
             continue
             
-        print(f"Testing position {position} = {sweep_value}")
+        if verbose:
+            print(f"Testing position {position} = {sweep_value}")
         
         out, first_correct_step, block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features = generate_custom(
             model, 
@@ -671,19 +676,23 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             if initial_confidence and len(initial_confidence) > curr_pos:
                 autoregressive_confidence = initial_confidence[curr_pos:]
                 autoregressive_entropy = initial_entropy[curr_pos:] if initial_entropy and len(initial_entropy) > curr_pos else []
-                print(f"📝 Extracted {len(autoregressive_confidence)} forward-looking confidence values from curr_pos={curr_pos}")
-                print(f"    Confidence values: {autoregressive_confidence[:5]}...")  # Show first 5
+                if verbose:
+                    print(f"📝 Extracted {len(autoregressive_confidence)} forward-looking confidence values from curr_pos={curr_pos}")
+                    print(f"    Confidence values: {autoregressive_confidence[:5]}...")  # Show first 5
             else:
                 autoregressive_confidence = []
                 autoregressive_entropy = []
-                print(f"⚠️ No confidence values available from generate_custom")
+                if verbose:
+                    print(f"⚠️ No confidence values available from generate_custom")
             
-            print(f"📝 Stored AR context tokens, additional features, and confidence for analysis")
+            if verbose:
+                print(f"📝 Stored AR context tokens, additional features, and confidence for analysis")
 
         # Early exit: if no correct answer was ever found (inf), keep last good size and skip remaining sweeps
         if first_correct_step == float('inf'):
             if best_value is not None:
-                print(f"Found inf at position {position}, sweep_value {sweep_value}. Keeping last good size {best_value} and stopping search.")
+                if verbose:
+                    print(f"Found inf at position {position}, sweep_value {sweep_value}. Keeping last good size {best_value} and stopping search.")
                 # best_step/best_value/optimal_* were already set when the good size was found
             else:
                 # No prior good result; record current outputs and exit
@@ -722,11 +731,12 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     min_step = best_step
     
     # Print the list of first_correct_steps and find the minimum
-    print(f"\nFirst correct steps: {first_correct_steps}")
-    print(f"Minimum first correct step: {min_step}")
-    print(f"Optimal block sizes: {optimal_block_sizes}")
-    print(f"\nOptimal output text:")
-    print(optimal_output_text)
+    if verbose:
+        print(f"\nFirst correct steps: {first_correct_steps}")
+        print(f"Minimum first correct step: {min_step}")
+        print(f"Optimal block sizes: {optimal_block_sizes}")
+        print(f"\nOptimal output text:")
+        print(optimal_output_text)
     
     # Show detailed confidence tracking for the optimal configuration
     if optimal_block_sizes is not None:
@@ -861,9 +871,10 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         "full_token_texts": full_token_texts
     }
     
-    print(f"\nTraining sample for curr_pos={curr_pos}:")
-    print(f"Features: {features}")
-    print(f"Block size: {training_sample['block_size']}")
+    if verbose:
+        print(f"\nTraining sample for curr_pos={curr_pos}:")
+        print(f"Features: {features}")
+        print(f"Block size: {training_sample['block_size']}")
 
     return training_sample
 
@@ -905,10 +916,12 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
     manual_settings = {}
     
     for curr_pos in range(gen_length):
-        print(f"\n=== curr_pos = {curr_pos} ===")
+        if verbose:
+            print(f"\n=== curr_pos = {curr_pos} ===")
         if curr_pos > 0:  # empty for the first iteration
             manual_settings[curr_pos-1] = 1  # decode 1 token at a time for all previous positions
-            print(f"manual_settings={manual_settings}")
+            if verbose:
+                print(f"manual_settings={manual_settings}")
         
         sample = generate_one_sample(
             model=model,
@@ -932,9 +945,10 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             sample['answer_found'] = answer_found
             
             if answer_found:
-                print(f"🎯 Answer found at curr_pos={curr_pos}!")
-                print(f"   Block size {current_block_size} == remaining length {gen_length - curr_pos}")
-                print(f"   Model wants to decode all remaining tokens at once")
+                if verbose:
+                    print(f"🎯 Answer found at curr_pos={curr_pos}!")
+                    print(f"   Block size {current_block_size} == remaining length {gen_length - curr_pos}")
+                    print(f"   Model wants to decode all remaining tokens at once")
                 
                 # Add this sample first, then decide whether to break
                 training_samples.append(sample)
@@ -1138,6 +1152,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
     import pandas as pd
     import json
     import csv
+    from tqdm import tqdm
     
     # Load correct questions
     df = pd.read_csv(csv_path)
@@ -1154,16 +1169,18 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
     
     print(f"Processing {len(df)} questions...")
     
-    for i in range(len(df)):
+    # Use tqdm for progress bar
+    for i in tqdm(range(len(df)), desc="Processing questions", unit="question"):
         question = df.iloc[i]['question']
         correct_answer = int(df.iloc[i]['answer_numerical'])  # Extract numerical answer
         prompt = instr + question
         
-        print(f"\n{'='*60}")
-        print(f"Processing question {i+1}/{len(df)}")
-        print(f"Question: {question[:100]}...")
-        print(f"Correct answer: {correct_answer}")
-        print(f"{'='*60}")
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"Processing question {i+1}/{len(df)}")
+            print(f"Question: {question[:100]}...")
+            print(f"Correct answer: {correct_answer}")
+            print(f"{'='*60}")
         
         # Generate training samples for this question
         question_samples = augment_one_sample(
