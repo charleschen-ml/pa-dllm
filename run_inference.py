@@ -85,9 +85,15 @@ if torch.cuda.is_available():
     print(f"GPU Memory - Allocated: {allocated:.1f}GB, Reserved: {reserved:.1f}GB")
 
 ########################################################
+# Instruction to prepend to each question
+########################################################
+instruction = "Solve this problem and box your final answer:\n"
+# instruction = None
+
+########################################################
 # Create dataset of questions answered correctly
 ########################################################
-# # Load gsm8k
+# Load gsm8k
 # df = load_gsm8k(10)
 
 # # Run batch inference
@@ -100,7 +106,8 @@ if torch.cuda.is_available():
 #     output_csv_path="./data/gsm8k_output.csv",
 #     steps=32,
 #     gen_length=32,
-#     block_length=1
+#     block_length=1,
+#     instruction=instruction
 # )
 # # Load df from csv
 # df = pd.read_csv("./data/gsm8k_output.csv")
@@ -112,7 +119,6 @@ if torch.cuda.is_available():
 # Load single prompt
 ########################################################
 # df = pd.read_csv("./data/gsm8k_correct.csv")
-# instr = "Solve this problem and box your final answer:\n"
 
 # question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?\n"
 # correct_answer = 72
@@ -120,7 +126,9 @@ if torch.cuda.is_available():
 # # question = df.iloc[1]['question'] # load the first question in df
 # # correct_answer = int(df.iloc[1]['answer_numerical'])  # extract the correct numerical answer
 
-# prompt = instr + question
+# if instruction is not None:
+#     question = instruction + question
+# prompt = question
 
 ########################################################
 # Run single inference
@@ -184,7 +192,7 @@ all_training_samples = augment_multiple_samples(
     break_after_answer_found=True,
     output_json_path="./data/sft_training_samples_multi_greedy.json",
     output_csv_path="./data/sft_training_samples_multi_greedy.csv",
-    verbose=False  # Set to True to see detailed progress logs
+    instruction=instruction
 )
 
 end_time = time.time()

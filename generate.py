@@ -6,9 +6,23 @@ from tqdm import tqdm
 
 from transformers import AutoTokenizer, AutoModel
 
-def extract_boxed(text):
-    match = re.search(r'\\boxed{(\d+)}', text)
-    return int(match.group(1)) if match else None
+def extract_numerical(text):
+    """Extract the final boxed numerical answer (e.g., from \boxed{72}) or trailing number."""
+    # Try to extract from \boxed{...}
+    boxed_match = re.search(r"\\boxed{([\d.,]+)}", text)
+    if boxed_match:
+        num_str = boxed_match.group(1).replace(",", "")
+    else:
+        # Try to extract last number in string
+        num_match = re.search(r"(\d+(?:\.\d+)?)\s*$", text.strip())
+        num_str = num_match.group(1) if num_match else None
+
+    if num_str is None:
+        return None
+    try:
+        return int(num_str) if '.' not in num_str else float(num_str)
+    except ValueError:
+        return None
 
 def add_gumbel_noise(logits, temperature):
     '''
@@ -154,7 +168,7 @@ def get_num_transfer_tokens(mask_index, steps):
 #             # check answer correct
 #             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
 #             print("\n" + out_text)
-#             is_correct = extract_boxed(out_text) == 72
+#             is_correct = extract_numerical(out_text) == 72
 #             if is_correct and first_correct_step is None:
 #                 first_correct_step = total_step
 #             print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
@@ -177,7 +191,7 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
         cfg_scale: Unsupervised classifier-free guidance scale.
         remasking: Remasking strategy. 'low_confidence' or 'random'.
         mask_id: The token id of [MASK] is 126336.
-        expected_answer: Optional, if set will compare against `extract_boxed()` for correctness logging.
+        expected_answer: Optional, if set will compare against `extract_numerical()` for correctness logging.
     '''
 
     # Create x = prompt + completion 
@@ -601,7 +615,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             # print("\n" + out_text)
             is_correct = False
             if correct_answer is not None:
-                extracted_answer = extract_boxed(out_text)
+                extracted_answer = extract_numerical(out_text)
                 is_correct = extracted_answer == correct_answer
                 if is_correct and first_correct_step is None:
                     first_correct_step = total_step

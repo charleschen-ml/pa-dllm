@@ -35,7 +35,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "t
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8" # To fix torch deterministic error
 torch.use_deterministic_algorithms(True)
 
-from generate import generate_vanilla, generate_custom, extract_boxed # generate.py from llada github
+from generate import generate_vanilla, generate_custom, extract_numerical # generate.py from llada github
 from transformers import AutoTokenizer, AutoModel
 
 # Custom arguments for inference-specific parameters
@@ -281,10 +281,18 @@ def load_model(model_args):
     return model, tokenizer, device
 
 # Run single inference
-def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
+def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, instruction=None):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
+    
+    Args:
+        prompt: Input prompt string (can be question only if instruction is provided)
+        instruction: Optional instruction to prepend to prompt. If provided, prompt becomes instruction + prompt.
     """
+
+    # If instruction is provided, prepend it to the prompt
+    if instruction is not None:
+        prompt = instruction + prompt
 
     print(f"raw prompt=\n{prompt}")
 
@@ -327,7 +335,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
 
     out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
     print(f"out_text=\n{out_text}")
-    # print(f"Answer correct? {extract_boxed(out_text) == 72}")
+    # print(f"Answer correct? {extract_numerical(out_text) == 72}")
 
     # debug
     # outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
@@ -338,27 +346,10 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     return out # so we can go token by token
 
 def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, output_csv_path,
-                        steps=16, gen_length=32, block_length=2):
+                        steps=16, gen_length=32, block_length=2, instruction=None):
     import pandas as pd
     import re
 
-    def extract_numerical(text):
-        """Extract the final boxed numerical answer (e.g., from \boxed{72}) or trailing number."""
-        # Try to extract from \boxed{...}
-        boxed_match = re.search(r"\\boxed{([\d.,]+)}", text)
-        if boxed_match:
-            num_str = boxed_match.group(1).replace(",", "")
-        else:
-            # Try to extract last number in string
-            num_match = re.search(r"(\d+(?:\.\d+)?)\s*$", text.strip())
-            num_str = num_match.group(1) if num_match else None
-
-        if num_str is None:
-            return None
-        try:
-            return int(num_str) if '.' not in num_str else float(num_str)
-        except ValueError:
-            return None
 
     print(f"📥 Loading: {input_csv_path}")
     df = pd.read_csv(input_csv_path)
@@ -371,8 +362,10 @@ def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, ou
         question = getattr(row, "question")
 
         # Apply chat template
-        instr = "Solve this problem and box your final answer:\n"
-        messages = [{"role": "user", "content": instr + question}]
+        # Use the instruction parameter (prepend if provided)
+        if instruction is not None:
+            question = instruction + question
+        messages = [{"role": "user", "content": question}]
         prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
 
@@ -423,7 +416,7 @@ def calculate_score(df, correct_csv_path="correct_questions.csv"):
     print(f"Correct questions saved to {correct_csv_path}")
 
 # Run Greedy inference
-def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, verbose=True):
+def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     Greedy search: optimize each position one by one
@@ -482,8 +475,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
                 block_sizes=block_sizes,
                 temperature=0.,
                 cfg_scale=0.,
-                remasking='low_confidence',
-                verbose=verbose
+                remasking='low_confidence'
             )
             first_correct_steps.append(first_correct_step)
 
@@ -529,12 +521,11 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
             min_step = best_step
     
     # Print the list of first_correct_steps and find the minimum
-    if verbose:
-        print(f"\nFirst correct steps: {first_correct_steps}")
-        print(f"Minimum first correct step: {min_step}")
-        print(f"Optimal block sizes: {optimal_block_sizes}")
-        print(f"\nOptimal output text:")
-        print(optimal_output_text)
+    print(f"\nFirst correct steps: {first_correct_steps}")
+    print(f"Minimum first correct step: {min_step}")
+    print(f"Optimal block sizes: {optimal_block_sizes}")
+    print(f"\nOptimal output text:")
+    print(optimal_output_text)
     
     # Show detailed confidence tracking for the optimal configuration
     if optimal_block_sizes is not None:
@@ -565,14 +556,13 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
                 block_sizes=final_block_sizes,
                 temperature=0.,
                 cfg_scale=0.,
-                remasking='low_confidence',
-                verbose=verbose
+                remasking='low_confidence'
             )
 
 
     # out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
     # print("\n" + out_text)
-    # print(f"Answer correct? {extract_boxed(out_text) == 72}")
+    # print(f"Answer correct? {extract_numerical(out_text) == 72}")
 
     # debug
     # outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
@@ -583,15 +573,21 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
     return
 
 # Generate one sample for SFT dataset
-def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0, manual_settings=None, correct_answer=None, verbose=True):
+def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0, manual_settings=None, correct_answer=None, instruction=None):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     
     Args:
+        prompt: Input prompt string (can be question only if instruction is provided)
         manual_settings: Dict of {block_position: block_size_value} for manual block size settings.
                         If None, starts with empty dict (all blocks use base_block_length).
         correct_answer: Expected correct answer for checking correctness (optional).
+        instruction: Optional instruction to prepend to prompt. If provided, prompt becomes instruction + prompt.
     """
+
+    # If instruction is provided, prepend it to the prompt
+    if instruction is not None:
+        prompt = instruction + prompt
 
     # Add special tokens for the Instruct model (not required for base model)
     m = [{"role": "user", "content": prompt}, ]
@@ -603,8 +599,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 
     # debug
     inputs_decoded = tokenizer.decode(input_ids[0], skip_special_tokens=True)
-    if verbose:
-        print(f"decoded inputs=\n{inputs_decoded}")
+    print(f"decoded inputs=\n{inputs_decoded}")
 
     # custom generate with block size as list
     first_correct_steps = []
@@ -618,8 +613,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         manual_settings = {}  # {block_position: block_size_value}
     
     # We'll use the confidence values from generate_custom instead of reimplementing
-    if verbose:
-        print(f"\n=== Using confidence from generate_custom for curr_pos={curr_pos} ===")
+    print(f"\n=== Using confidence from generate_custom for curr_pos={curr_pos} ===")
     autoregressive_confidence = []
     autoregressive_entropy = []
 
@@ -627,8 +621,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     num_blocks = gen_length // base_block_length
     position = curr_pos # optimize the position specified by curr_pos
 
-    if verbose:
-        print(f"\n=== Optimizing position {position} (single token search) ===")
+    print(f"\n=== Optimizing position {position} (single token search) ===")
     best_value = None
     best_step = float('inf')
     optimal_out = None  # Store optimal token IDs
@@ -648,8 +641,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         if block_sizes is None:
             continue
             
-        if verbose:
-            print(f"Testing position {position} = {sweep_value}")
+        print(f"Testing position {position} = {sweep_value}")
         
         out, first_correct_step, block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features = generate_custom(
             model, 
@@ -662,8 +654,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             cfg_scale=0.,
             remasking='low_confidence',
             curr_pos=curr_pos,  # Pass curr_pos to capture confidence/entropy at the right block
-            correct_answer=correct_answer,
-            verbose=verbose
+            correct_answer=correct_answer
         )
         first_correct_steps.append(first_correct_step)
 
@@ -676,23 +667,19 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             if initial_confidence and len(initial_confidence) > curr_pos:
                 autoregressive_confidence = initial_confidence[curr_pos:]
                 autoregressive_entropy = initial_entropy[curr_pos:] if initial_entropy and len(initial_entropy) > curr_pos else []
-                if verbose:
-                    print(f"📝 Extracted {len(autoregressive_confidence)} forward-looking confidence values from curr_pos={curr_pos}")
-                    print(f"    Confidence values: {autoregressive_confidence[:5]}...")  # Show first 5
+                print(f"📝 Extracted {len(autoregressive_confidence)} forward-looking confidence values from curr_pos={curr_pos}")
+                print(f"    Confidence values: {autoregressive_confidence[:5]}...")  # Show first 5
             else:
                 autoregressive_confidence = []
                 autoregressive_entropy = []
-                if verbose:
-                    print(f"⚠️ No confidence values available from generate_custom")
+                print(f"⚠️ No confidence values available from generate_custom")
             
-            if verbose:
-                print(f"📝 Stored AR context tokens, additional features, and confidence for analysis")
+            print(f"📝 Stored AR context tokens, additional features, and confidence for analysis")
 
         # Early exit: if no correct answer was ever found (inf), keep last good size and skip remaining sweeps
         if first_correct_step == float('inf'):
             if best_value is not None:
-                if verbose:
-                    print(f"Found inf at position {position}, sweep_value {sweep_value}. Keeping last good size {best_value} and stopping search.")
+                print(f"Found inf at position {position}, sweep_value {sweep_value}. Keeping last good size {best_value} and stopping search.")
                 # best_step/best_value/optimal_* were already set when the good size was found
             else:
                 # No prior good result; record current outputs and exit
@@ -731,12 +718,11 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     min_step = best_step
     
     # Print the list of first_correct_steps and find the minimum
-    if verbose:
-        print(f"\nFirst correct steps: {first_correct_steps}")
-        print(f"Minimum first correct step: {min_step}")
-        print(f"Optimal block sizes: {optimal_block_sizes}")
-        print(f"\nOptimal output text:")
-        print(optimal_output_text)
+    print(f"\nFirst correct steps: {first_correct_steps}")
+    print(f"Minimum first correct step: {min_step}")
+    print(f"Optimal block sizes: {optimal_block_sizes}")
+    print(f"\nOptimal output text:")
+    print(optimal_output_text)
     
     # Show detailed confidence tracking for the optimal configuration
     if optimal_block_sizes is not None:
@@ -767,8 +753,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
                 block_sizes=final_block_sizes,
                 temperature=0.,
                 cfg_scale=0.,
-                remasking='low_confidence',
-                verbose=verbose
+                remasking='low_confidence'
             )
 
     # store the input-ouput pair in this format (e.g. curr_pos=4):
@@ -819,9 +804,10 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             # Calculate position_relative (position / gen_length) with 4 decimal places
             position_relative = round(position / gen_length, 4)
             
-            # Create comprehensive feature vector (removed redundant: confidence, entropy, position)
+            # Create comprehensive feature vector
             feature_row = [
-                token_id, token_text, position_relative,
+                confidence, entropy, position, token_id, token_text,
+                position_relative,
                 additional_feats.get('conf_0', 0.0),
                 additional_feats.get('entropy_0', 0.0), 
                 additional_feats.get('top1_margin', 0.0),
@@ -840,8 +826,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         else:
             # Calculate position_relative for default row too
             position_relative = round(position / gen_length, 4)
-            # Default feature row with zeros for missing data (removed redundant features)
-            default_row = [None, None, position_relative] + [0.0] * 12  # 12 additional features
+            # Default feature row with zeros for missing data
+            default_row = [0.0, 0.0, position, None, None, position_relative] + [0.0] * 12  # 12 additional features
             features.append(default_row)
     
     # Create training sample with full lists preserved
@@ -871,14 +857,13 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         "full_token_texts": full_token_texts
     }
     
-    if verbose:
-        print(f"\nTraining sample for curr_pos={curr_pos}:")
-        print(f"Features: {features}")
-        print(f"Block size: {training_sample['block_size']}")
+    print(f"\nTraining sample for curr_pos={curr_pos}:")
+    print(f"Features: {features}")
+    print(f"Block size: {training_sample['block_size']}")
 
     return training_sample
 
-def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, verbose=True):
+def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None):
     """
     Generate training samples by collecting confidence/entropy data at different curr_pos values,
     and save them to JSON and CSV files.
@@ -887,18 +872,23 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
         model: The model to use for generation
         tokenizer: Tokenizer for the model
         device: Device to run on
-        prompt: Input prompt string
+        prompt: Input prompt string (can be question only if instruction is provided)
         model_args: Model arguments
         gen_length: Generation length (default: 32)
         base_block_length: Base block length (default: 2)
         steps: Number of steps (default: 16)
         correct_answer: Expected correct answer for checking correctness (optional)
         break_after_answer_found: If True, stop augmentation after first answer_found=True (default: True)
+        instruction: Optional instruction to prepend to prompt. If provided, prompt becomes instruction + prompt.
     
     Returns:
         List of training samples, each containing features and block_size
     """
     print(f"\n🔄 Augmenting sample with gen_length={gen_length}, base_block_length={base_block_length}, steps={steps}")
+    
+    # If instruction is provided, prepend it to the prompt
+    if instruction is not None:
+        prompt = instruction + prompt
     
     # Get the token ID for <eot_id> to check for early termination
     eot_token_id = 126348  # Known <eot_id> token ID
@@ -916,12 +906,10 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
     manual_settings = {}
     
     for curr_pos in tqdm(range(gen_length), desc="Processing positions", unit="pos", leave=False):
-        if verbose:
-            print(f"\n=== curr_pos = {curr_pos} ===")
+        print(f"\n=== curr_pos = {curr_pos} ===")
         if curr_pos > 0:  # empty for the first iteration
             manual_settings[curr_pos-1] = 1  # decode 1 token at a time for all previous positions
-            if verbose:
-                print(f"manual_settings={manual_settings}")
+            print(f"manual_settings={manual_settings}")
         
         sample = generate_one_sample(
             model=model,
@@ -935,7 +923,6 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             curr_pos=curr_pos,
             manual_settings=manual_settings,
             correct_answer=correct_answer,
-            verbose=verbose,
         )
         if sample:
             current_block_size = sample.get('block_size', 1)
@@ -945,10 +932,9 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             sample['answer_found'] = answer_found
             
             if answer_found:
-                if verbose:
-                    print(f"🎯 Answer found at curr_pos={curr_pos}!")
-                    print(f"   Block size {current_block_size} == remaining length {gen_length - curr_pos}")
-                    print(f"   Model wants to decode all remaining tokens at once")
+                print(f"🎯 Answer found at curr_pos={curr_pos}!")
+                print(f"   Block size {current_block_size} == remaining length {gen_length - curr_pos}")
+                print(f"   Model wants to decode all remaining tokens at once")
                 
                 # Add this sample first, then decide whether to break
                 training_samples.append(sample)
@@ -992,10 +978,10 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
     with open(csv_output_path, "w", newline='') as f:
         writer = csv.writer(f)
         
-        # Write header (removed redundant features: confidence, entropy, position)
+        # Write header
         header = [
-            'sample_id', 'token_id', 'token_text', 'position_relative', 
-            'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+            'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
+            'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
             'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
             'top8_conf_min', 'next8_conf_min', 'block_size', 'answer_found',
             'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts'
@@ -1008,21 +994,22 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             # Each sample now has exactly one feature row
             if sample['features']:  # Check if features exist
                 feature = sample['features'][0]  # Get the single feature row
-                if len(feature) >= 15:  # Full feature row (now has 15 features without redundant ones)
-                    (token_id, token_text, position_relative,
+                if len(feature) >= 18:  # Full feature row (now has 18 features with position_relative)
+                    (confidence, entropy, position, token_id, token_text, position_relative,
                      conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
                      conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
                      top8_conf_min, next8_conf_min) = feature
                 else:  # Fallback for incomplete rows
-                    token_id, token_text = feature[:2] if len(feature) > 1 else (None, None)
-                    position_relative = feature[2] if len(feature) > 2 else 0.0
+                    confidence, entropy, position = feature[:3]
+                    token_id, token_text = feature[3:5] if len(feature) > 4 else (None, None)
+                    position_relative = feature[5] if len(feature) > 5 else 0.0
                     (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
                      conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
                      top8_conf_min, next8_conf_min) = [0.0] * 12
                 
                 writer.writerow([
-                    sample_id, token_id, token_text, round(position_relative, 4), 
-                    round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
+                    sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
+                    round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
                     round(mean_confidence, 4), round(mean_entropy, 4),
                     round(conf_std, 4), round(entropy_std, 4), round(conf_1, 4), 
                     round(top4_conf_min, 4), round(next4_conf_min, 4),
@@ -1034,7 +1021,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
                 ])
             else:
                 # No features available, write a default row
-                writer.writerow([sample_id, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], []])
+                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], []])
     
     print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
     print(f"  📄 JSON: {json_output_path}")
@@ -1128,7 +1115,8 @@ def main(script_args, model_args, inference_args):
 def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num_questions=2, 
                            gen_length=32, base_block_length=1, steps=32, break_after_answer_found=True,
                            output_json_path="./data/sft_training_samples_multi_greedy.json",
-                           output_csv_path="./data/sft_training_samples_multi_greedy.csv", verbose=True):
+                           output_csv_path="./data/sft_training_samples_multi_greedy.csv",
+                           instruction=None):
     """
     Process multiple questions from a CSV file and generate training samples for each.
     
@@ -1145,6 +1133,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
         break_after_answer_found: Whether to break after answer found (default: True)
         output_json_path: Output JSON file path
         output_csv_path: Output CSV file path
+        instruction: Instruction to prepend to each question (default: None)
     
     Returns:
         List of all training samples across all questions
@@ -1152,7 +1141,6 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
     import pandas as pd
     import json
     import csv
-    from tqdm import tqdm
     
     # Load correct questions
     df = pd.read_csv(csv_path)
@@ -1161,26 +1149,25 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
     df = df.head(num_questions)
     print(f"Processing {len(df)} questions (truncated from full dataset)")
     
-    # Parameters
-    instr = "Solve this problem and box your final answer:\n"
+    # Use the instruction parameter (prepend if provided)
     
     # Collect all training samples from all questions
     all_training_samples = []
     
     print(f"Processing {len(df)} questions...")
     
-    # Use tqdm for progress bar
     for i in tqdm(range(len(df)), desc="Processing questions", unit="question"):
         question = df.iloc[i]['question']
         correct_answer = int(df.iloc[i]['answer_numerical'])  # Extract numerical answer
-        prompt = instr + question
+        if instruction is not None:
+            question = instruction + question
+        prompt = question
         
-        if verbose:
-            print(f"\n{'='*60}")
-            print(f"Processing question {i+1}/{len(df)}")
-            print(f"Question: {question[:100]}...")
-            print(f"Correct answer: {correct_answer}")
-            print(f"{'='*60}")
+        print(f"\n{'='*60}")
+        print(f"Processing question {i+1}/{len(df)}")
+        print(f"Question: {question[:100]}...")
+        print(f"Correct answer: {correct_answer}")
+        print(f"{'='*60}")
         
         # Generate training samples for this question
         question_samples = augment_one_sample(
@@ -1193,8 +1180,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
             base_block_length=base_block_length,
             steps=steps,
             correct_answer=correct_answer,
-            break_after_answer_found=break_after_answer_found,
-            verbose=verbose
+            break_after_answer_found=break_after_answer_found
         )
         
         # Add question metadata to each sample
@@ -1217,10 +1203,10 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
     with open(output_csv_path, "w", newline='') as f:
         writer = csv.writer(f)
         
-        # Write header (removed redundant features: confidence, entropy, position)
+        # Write header (same as augment_one_sample)
         header = [
-            'sample_id', 'token_id', 'token_text', 'position_relative', 
-            'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+            'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
+            'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
             'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
             'top8_conf_min', 'next8_conf_min', 'block_size', 'answer_found',
             'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts',
@@ -1238,22 +1224,22 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
             features = sample.get('features', [])
             if features:
                 for feature in features:
-                    if len(feature) >= 15:  # Full feature set (removed redundant features)
-                        token_id, token_text, position_relative = feature[:3]
+                    if len(feature) >= 13:  # Full feature set
+                        confidence, entropy, position, token_id, token_text, position_relative = feature[:6]
                         (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
                          conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
-                         top8_conf_min, next8_conf_min) = feature[3:15]
+                         top8_conf_min, next8_conf_min) = feature[6:18] if len(feature) >= 18 else feature[6:6+12]
                     else:
                         # Handle incomplete features
-                        token_id, token_text = feature[:2] if len(feature) > 1 else [None, None]
-                        position_relative = feature[2] if len(feature) > 2 else 0.0
+                        confidence, entropy, position = feature[:3]
+                        token_id, token_text, position_relative = feature[3:6] if len(feature) > 3 else [None, None, 0.0]
                         (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
                          conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
                          top8_conf_min, next8_conf_min) = [0.0] * 12
                     
                     writer.writerow([
-                        sample_id, token_id, token_text, round(position_relative, 4), 
-                        round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
+                        sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
+                        round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
                         round(mean_confidence, 4), round(mean_entropy, 4),
                         round(conf_std, 4), round(entropy_std, 4), round(conf_1, 4), 
                         round(top4_conf_min, 4), round(next4_conf_min, 4),
@@ -1266,7 +1252,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
                     ])
             else:
                 # No features available, write a default row
-                writer.writerow([sample_id, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], [], question_id, question])
+                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], [], question_id, question])
 
     print(f"\n✅ Done. Saved {len(all_training_samples)} samples to:")
     print(f"  📄 JSON: {output_json_path}")
