@@ -11,6 +11,7 @@ os.environ["HF_DATASETS_CACHE"] = "./cache/datasets"
 # Import
 import pandas as pd
 import torch
+import time
 
 # Imports
 import inference
@@ -148,16 +149,24 @@ prompt = question
 ########################################################
 # Generate one sample
 ########################################################
+print("🚀 Starting generate_one_sample...")
+start_time = time.time()
+
 manual_settings = {}
 training_sample = generate_one_sample(
     model, tokenizer, device, prompt, model_args, 
-    gen_length=32, 
+    gen_length=128, 
     base_block_length=1, 
-    steps=32, 
+    steps=128, 
     curr_pos=0, 
     correct_answer=correct_answer,
     manual_settings=manual_settings,)
 print(f"training_sample=\n{training_sample}")
+end_time = time.time()
+elapsed_time = end_time - start_time
+
+print(f"\n⏱️  TIMING REPORT:")
+print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
 
 ########################################################
 # Augment one sample
@@ -178,7 +187,6 @@ print(f"training_sample=\n{training_sample}")
 ########################################################
 # Augment multiple samples
 ########################################################
-# import time
 # print("🚀 Starting augment_multiple_samples...")
 # start_time = time.time()
 
