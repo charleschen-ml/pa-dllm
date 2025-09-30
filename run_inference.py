@@ -21,6 +21,7 @@ importlib.reload(inference)
 # Load inference functions
 from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference, generate_one_sample
 from inference import augment_one_sample, load_gsm8k, augment_multiple_samples
+from inference import augment_one_sample_batch
 from generate import generate_vanilla, generate_custom
 
 # FASTEST: Load model weights and recreate architecture
@@ -149,40 +150,67 @@ prompt = question
 ########################################################
 # Generate one sample
 ########################################################
-print("🚀 Starting generate_one_sample...")
-start_time = time.time()
-
-manual_settings = {}
-training_sample = generate_one_sample(
-    model, tokenizer, device, prompt, model_args, 
-    gen_length=128, 
-    base_block_length=1, 
-    steps=128, 
-    curr_pos=0, 
-    correct_answer=correct_answer,
-    manual_settings=manual_settings,)
-print(f"training_sample=\n{training_sample}")
-end_time = time.time()
-elapsed_time = end_time - start_time
-
-print(f"\n⏱️  TIMING REPORT:")
-print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+# print("🚀 Starting generate_one_sample...")
+# start_time = time.time()
+# manual_settings = {}
+# training_sample = generate_one_sample(
+#     model, tokenizer, device, prompt, model_args, 
+#     gen_length=128, 
+#     base_block_length=1, 
+#     steps=128, 
+#     curr_pos=0, 
+#     correct_answer=correct_answer,
+#     manual_settings=manual_settings,)
+# print(f"training_sample=\n{training_sample}")
+# end_time = time.time()
+# elapsed_time = end_time - start_time
+# print(f"\n⏱️  TIMING REPORT:")
+# print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
 
 ########################################################
 # Augment one sample
 ########################################################
+# print("🚀 Starting augment_multiple_samples...")
+# start_time = time.time()
 # training_samples = augment_one_sample(
 #     model=model,
 #     tokenizer=tokenizer,
 #     device=device,
 #     prompt=prompt,
 #     model_args=model_args,
-#     gen_length=128,
+#     gen_length=32,
 #     base_block_length=1,
-#     steps=128,
+#     steps=32,
 #     correct_answer=correct_answer,
 #     break_after_answer_found=True  # Set to False to continue augmentation after answer found
 # )
+# end_time = time.time()
+# elapsed_time = end_time - start_time
+# print(f"\n⏱️  TIMING REPORT:")
+# print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+
+########################################################
+# Augment one sample (BATCHED)
+########################################################
+print("🚀 Starting augment_multiple_samples...")
+start_time = time.time()
+training_samples_batch = augment_one_sample_batch(
+    model=model,
+    tokenizer=tokenizer,
+    device=device,
+    prompt=prompt,
+    model_args=model_args,
+    gen_length=32,
+    base_block_length=1,
+    steps=32,
+    correct_answer=correct_answer,
+    break_after_answer_found=True
+)
+end_time = time.time()
+elapsed_time = end_time - start_time
+print(f"🚀 Batch augmentation produced {len(training_samples_batch)} samples")
+print(f"\n⏱️  TIMING REPORT:")
+print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
 
 ########################################################
 # Augment multiple samples
