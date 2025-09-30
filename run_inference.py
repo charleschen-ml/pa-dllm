@@ -170,31 +170,9 @@ prompt = question
 ########################################################
 # Augment one sample
 ########################################################
-# print("🚀 Starting augment_multiple_samples...")
-# start_time = time.time()
-# training_samples = augment_one_sample(
-#     model=model,
-#     tokenizer=tokenizer,
-#     device=device,
-#     prompt=prompt,
-#     model_args=model_args,
-#     gen_length=32,
-#     base_block_length=1,
-#     steps=32,
-#     correct_answer=correct_answer,
-#     break_after_answer_found=True  # Set to False to continue augmentation after answer found
-# )
-# end_time = time.time()
-# elapsed_time = end_time - start_time
-# print(f"\n⏱️  TIMING REPORT:")
-# print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
-
-########################################################
-# Augment one sample (BATCHED)
-########################################################
 print("🚀 Starting augment_multiple_samples...")
 start_time = time.time()
-training_samples_batch = augment_one_sample_batch(
+training_samples = augment_one_sample(
     model=model,
     tokenizer=tokenizer,
     device=device,
@@ -204,13 +182,35 @@ training_samples_batch = augment_one_sample_batch(
     base_block_length=1,
     steps=32,
     correct_answer=correct_answer,
-    break_after_answer_found=True
+    break_after_answer_found=True  # Set to False to continue augmentation after answer found
 )
 end_time = time.time()
 elapsed_time = end_time - start_time
-print(f"🚀 Batch augmentation produced {len(training_samples_batch)} samples")
 print(f"\n⏱️  TIMING REPORT:")
 print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+
+########################################################
+# Augment one sample (BATCHED)
+########################################################
+# print("🚀 Starting augment_multiple_samples...")
+# start_time = time.time()
+# training_samples_batch = augment_one_sample_batch(
+#     model=model,
+#     tokenizer=tokenizer,
+#     device=device,
+#     prompt=prompt,
+#     model_args=model_args,
+#     gen_length=32,
+#     base_block_length=1,
+#     steps=32,
+#     correct_answer=correct_answer,
+#     break_after_answer_found=True
+# )
+# end_time = time.time()
+# elapsed_time = end_time - start_time
+# print(f"🚀 Batch augmentation produced {len(training_samples_batch)} samples")
+# print(f"\n⏱️  TIMING REPORT:")
+# print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
 
 ########################################################
 # Augment multiple samples

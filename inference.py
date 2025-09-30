@@ -1143,6 +1143,121 @@ def generate_custom_batch(
 
     return results
 
+@torch.no_grad()
+def generate_custom_batch_parallel(
+    model, tokenizer, prompts, curr_pos_list,
+    steps=128, gen_length=128, base_block_length=1,
+    candidate_block_sizes=None,
+    temperature=0., cfg_scale=0., remasking="low_confidence",
+    correct_answer=None, verbose=False
+):
+    """
+    True batched version: run all curr_pos and candidate block sizes in parallel.
+    """
+
+    from inference import calculate_block_sizes
+    from generate import generate_custom
+
+    device = model.device
+    batch_size = len(curr_pos_list)
+
+    if candidate_block_sizes is None:
+        # full sweep is expensive; log-spaced subset is common
+        candidate_block_sizes = list(range(1, min(17, gen_length + 1)))
+
+    all_inputs = []
+    meta = []  # (batch_idx, curr_pos, sweep_value)
+
+    for b, curr_pos in enumerate(curr_pos_list):
+        for sweep_value in candidate_block_sizes:
+            manual_settings = {p: 1 for p in range(curr_pos)}
+            manual_settings[curr_pos] = sweep_value
+            block_sizes = calculate_block_sizes(
+                gen_length=gen_length,
+                base_block_length=base_block_length,
+                manual_settings=manual_settings,
+            )
+            if block_sizes is None:
+                continue
+            x = torch.full(
+                (1, prompts.shape[1] + gen_length),
+                126336, dtype=torch.long, device=device
+            )
+            x[:, :prompts.shape[1]] = prompts[b:b+1]
+            all_inputs.append((x, block_sizes))
+            meta.append((b, curr_pos, sweep_value))
+
+    # === Batch the model forward ===
+    x_cat = torch.cat([x for (x, _) in all_inputs], dim=0)  # [B*C, seq_len]
+    logits = model(x_cat).logits  # heavy part: 1 forward pass
+
+    # === Evaluate candidates ===
+    results = [None] * batch_size
+    for idx, (b, curr_pos, sweep_value) in enumerate(meta):
+        block_sizes = all_inputs[idx][1]
+        x_in = x_cat[idx:idx+1]
+
+        (
+            out, first_correct_step, block_confidences,
+            initial_entropy, initial_confidence,
+            ar_context_tokens, additional_features
+        ) = generate_custom(
+            model, tokenizer, x_in,
+            steps=steps, gen_length=gen_length,
+            block_sizes=block_sizes,
+            temperature=temperature, cfg_scale=cfg_scale,
+            remasking=remasking,
+            curr_pos=curr_pos, correct_answer=correct_answer,
+            verbose=False
+        )
+
+        # Initialize result slot if empty
+        if results[b] is None:
+            results[b] = {
+                "curr_pos": curr_pos,
+                "best_step": float("inf"),
+                "best_value": None,
+                "optimal_output_text": None,
+                "block_confidences": None,
+                "initial_confidence": initial_confidence,
+                "initial_entropy": initial_entropy,
+                "ar_context_tokens": ar_context_tokens,
+                "additional_features": additional_features,
+                "x": None,
+            }
+
+        # Greedy selection logic
+        if (first_correct_step < results[b]["best_step"]) or (
+            first_correct_step == results[b]["best_step"]
+            and (results[b]["best_value"] is None or sweep_value > results[b]["best_value"])
+        ):
+            results[b].update({
+                "x": out,
+                "best_step": first_correct_step,
+                "best_value": sweep_value,
+                "optimal_output_text": tokenizer.batch_decode(
+                    out[:, prompts.shape[1]:], skip_special_tokens=True
+                )[0],
+                "block_confidences": block_confidences,
+            })
+
+    # Clean up return format
+    final = []
+    for r in results:
+        final.append({
+            "x": r["x"],
+            "first_correct_step": r["best_step"],
+            "block_confidences": r["block_confidences"],
+            "initial_confidence": r["initial_confidence"],
+            "initial_entropy": r["initial_entropy"],
+            "ar_context_tokens": r["ar_context_tokens"],
+            "additional_features": r["additional_features"],
+            "chosen_block_size": r["best_value"] if r["best_value"] is not None else 1,
+            "optimal_output_text": r["optimal_output_text"],
+            "curr_pos": r["curr_pos"],
+        })
+    return final
+
 def augment_one_sample_batch(
     model, tokenizer, device, prompt, model_args,
     gen_length=32, base_block_length=2, steps=16,
@@ -1175,18 +1290,34 @@ def augment_one_sample_batch(
 
     prompts = input_ids.repeat(len(curr_pos_list), 1)
 
-    results = generate_custom_batch(
-        model,
-        tokenizer,
-        prompts,
-        steps=steps,
-        gen_length=gen_length,
-        base_block_length=base_block_length,
-        manual_settings={},  # rebuilt internally per curr_pos
-        curr_pos_list=curr_pos_list,
-        correct_answer=correct_answer,
-        verbose=False,
-    )
+    # Swap between sequential and parallel here
+    use_parallel = True
+    if use_parallel:
+        results = generate_custom_batch_parallel(
+            model,
+            tokenizer,
+            prompts,
+            curr_pos_list=curr_pos_list,
+            steps=steps,
+            gen_length=gen_length,
+            base_block_length=base_block_length,
+            candidate_block_sizes=None,  # defaults to 1..16; can set to full if needed
+            correct_answer=correct_answer,
+            verbose=False,
+        )
+    else:
+        results = generate_custom_batch(
+            model,
+            tokenizer,
+            prompts,
+            steps=steps,
+            gen_length=gen_length,
+            base_block_length=base_block_length,
+            manual_settings={},  # rebuilt internally per curr_pos
+            curr_pos_list=curr_pos_list,
+            correct_answer=correct_answer,
+            verbose=False,
+        )
 
     # Convert results into training_samples list
     for idx, res in enumerate(results):

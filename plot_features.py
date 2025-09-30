@@ -15,8 +15,8 @@ def plot_features_vs_labels():
     os.makedirs('./output', exist_ok=True)
     
     # Load the training data
-    # csv_path = './data/sft_training_samples_greedy.csv' # single augmentation
-    csv_path = './data/sft_training_samples_multi_greedy.csv' # multi augmentation
+    csv_path = './data/sft_training_samples_greedy.csv' # single augmentation
+    # csv_path = './data/sft_training_samples_multi_greedy.csv' # multi augmentation
     if not os.path.exists(csv_path):
         print(f"❌ Data file not found: {csv_path}")
         return
@@ -25,7 +25,8 @@ def plot_features_vs_labels():
     df = pd.read_csv(csv_path)
 
     # manual experiment: filter by answer_found
-    df = df[df['answer_found'] == False]
+    df = df[df['answer_found'] == False] # always do this
+    # df = df[(df['position_relative'] > 0.3) & (df['position_relative'] < 0.7)] # filter for middle positions
     
     print(f"✅ Loaded {len(df)} samples")
     print(f"Columns: {list(df.columns)}")
