@@ -1032,19 +1032,18 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
 @torch.no_grad()
 def generate_custom_batch(
     model, tokenizer, prompts, steps=128, gen_length=128,
-    block_sizes_list=None, temperature=0., cfg_scale=0.,
-    remasking="low_confidence", curr_pos_list=None,
-    correct_answer=None, verbose=False
+    base_block_length=1, manual_settings=None,
+    temperature=0., cfg_scale=0., remasking="low_confidence",
+    curr_pos_list=None, correct_answer=None, verbose=False
 ):
     """
     Batched greedy version of generate_custom.
-    Mirrors generate_one_sample logic: for each curr_pos, sweep block sizes
-    from 1..gen_length, run generate_custom, and pick the best_value.
-    
+    Mirrors generate_one_sample: for each curr_pos, sweep block sizes
+    incrementally and stop early when larger block sizes stop improving.
+
     Args:
-        model, tokenizer: as before
-        prompts: tensor [batch, L]
-        block_sizes_list: NOT used here (we build inside loop)
+        base_block_length: passed through (not hardcoded!)
+        manual_settings: dict of {position: value}, carried forward per curr_pos
         curr_pos_list: list of ints, one per batch element
     Returns:
         results: list of dicts, each containing:
@@ -1052,18 +1051,18 @@ def generate_custom_batch(
             - initial_confidence, initial_entropy
             - ar_context_tokens, additional_features
             - chosen_block_size, optimal_output_text
+            - curr_pos
     """
-
-    batch_size = len(curr_pos_list)
-    device = model.device
-
-    results = []
 
     from inference import calculate_block_sizes
     from generate import generate_custom
 
-    for b in range(batch_size):
-        curr_pos = curr_pos_list[b]
+    if manual_settings is None:
+        manual_settings = {}
+
+    results = []
+
+    for b, curr_pos in enumerate(curr_pos_list):
         input_ids = prompts[b:b+1]  # single sample [1, L]
 
         best_value = None
@@ -1073,17 +1072,30 @@ def generate_custom_batch(
         stored_ar_tokens = None
         stored_additional_features = None
 
-        # Sweep all possible block sizes
+        # Build manual_settings up to curr_pos (previous positions forced to 1)
+        local_manual_settings = manual_settings.copy()
+        for p in range(curr_pos):
+            local_manual_settings[p] = 1
+
         for sweep_value in range(1, gen_length + 1):
+            local_manual_settings[curr_pos] = sweep_value
             block_sizes = calculate_block_sizes(
                 gen_length=gen_length,
-                base_block_length=1,  # like your augment_one_sample
-                manual_settings={curr_pos: sweep_value},
+                base_block_length=base_block_length,
+                manual_settings=local_manual_settings.copy(),
             )
             if block_sizes is None:
                 continue
 
-            out, first_correct_step, block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features = generate_custom(
+            (
+                out,
+                first_correct_step,
+                block_confidences,
+                initial_entropy,
+                initial_confidence,
+                ar_context_tokens,
+                additional_features,
+            ) = generate_custom(
                 model,
                 tokenizer,
                 input_ids,
@@ -1095,15 +1107,13 @@ def generate_custom_batch(
                 remasking=remasking,
                 curr_pos=curr_pos,
                 correct_answer=correct_answer,
-                verbose=verbose
+                verbose=verbose,
             )
 
-            # Store AR tokens and additional features from the first call
             if stored_ar_tokens is None and ar_context_tokens is not None:
                 stored_ar_tokens = ar_context_tokens.clone()
                 stored_additional_features = additional_features.copy() if additional_features else {}
 
-            # Track best sweep_value
             if (first_correct_step < best_step) or (
                 first_correct_step == best_step and (best_value is None or sweep_value > best_value)
             ):
@@ -1114,7 +1124,7 @@ def generate_custom_batch(
                 )[0]
                 optimal_block_confidences = block_confidences.copy()
 
-            # Early stop if answer never found (∞) and we already have a good value
+            # ✅ Early stop: stop once outputs turn into inf after we already have a best_value
             if first_correct_step == float("inf") and best_value is not None:
                 break
 
@@ -1159,38 +1169,36 @@ def augment_one_sample_batch(
     input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
 
     training_samples = []
-    manual_settings = {}
 
-    block_sizes_list, curr_pos_list = [], []
-    for curr_pos in range(gen_length):
-        if curr_pos > 0:
-            manual_settings[curr_pos - 1] = 1
-        block_sizes = calculate_block_sizes(
-            gen_length=gen_length,
-            base_block_length=base_block_length,
-            manual_settings=manual_settings.copy()
-        )
-        if block_sizes is None:
-            continue
-        block_sizes_list.append(block_sizes)
-        curr_pos_list.append(curr_pos)
+    # Build curr_pos_list (all positions 0..gen_length-1)
+    curr_pos_list = list(range(gen_length))
 
     prompts = input_ids.repeat(len(curr_pos_list), 1)
 
     results = generate_custom_batch(
-        model, tokenizer, prompts, steps=steps, gen_length=gen_length,
-        block_sizes_list=block_sizes_list, curr_pos_list=curr_pos_list,
-        correct_answer=correct_answer, verbose=False
+        model,
+        tokenizer,
+        prompts,
+        steps=steps,
+        gen_length=gen_length,
+        base_block_length=base_block_length,
+        manual_settings={},  # rebuilt internally per curr_pos
+        curr_pos_list=curr_pos_list,
+        correct_answer=correct_answer,
+        verbose=False,
     )
 
     # Convert results into training_samples list
     for idx, res in enumerate(results):
-        curr_pos = curr_pos_list[idx]
-        block_size = res.get("chosen_block_size", 1)  # must be stored in generate_custom_batch
+        curr_pos = res["curr_pos"]
+        block_size = res["chosen_block_size"]
+
+        # === Build feature row (mirrors generate_one_sample) ===
         features = []
         if res["initial_confidence"] and res["initial_entropy"]:
             confidence = res["initial_confidence"][curr_pos]
             entropy = res["initial_entropy"][curr_pos]
+
             token_id, token_text = None, None
             if res["ar_context_tokens"] is not None:
                 gen_start = prompts.shape[1]
@@ -1229,9 +1237,8 @@ def augment_one_sample_batch(
             "full_token_texts": tokenizer.batch_decode(
                 res["ar_context_tokens"][0], skip_special_tokens=False
             ) if res["ar_context_tokens"] is not None else [],
-            "answer_found": block_size == (gen_length - curr_pos)
+            "answer_found": block_size == (gen_length - curr_pos),
         }
-
         training_samples.append(sample)
 
         if sample["answer_found"]:
@@ -1259,39 +1266,24 @@ def augment_one_sample_batch(
         for sample_id, sample in enumerate(training_samples):
             if sample['features']:
                 feature = sample['features'][0]
-                if len(feature) >= 18:
-                    (confidence, entropy, position, token_id, token_text, position_relative,
-                     conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
-                     conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
-                     top8_conf_min, next8_conf_min) = feature
-                else:
-                    confidence, entropy, position = feature[:3]
-                    token_id, token_text = feature[3:5] if len(feature) > 4 else (None, None)
-                    position_relative = feature[5] if len(feature) > 5 else 0.0
-                    (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
-                     conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
-                     top8_conf_min, next8_conf_min) = [0.0] * 12
+                writer.writerow([
+                    sample_id, *feature,
+                    sample['block_size'], sample['answer_found'],
+                    sample.get('full_confidence_list', []),
+                    sample.get('full_entropy_list', []),
+                    sample.get('full_token_ids', []),
+                    sample.get('full_token_texts', [])
+                ])
             else:
-                # Fallback default row
-                confidence = entropy = position = 0.0
-                token_id = token_text = None
-                position_relative = 0.0
-                (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
-                 conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
-                 top8_conf_min, next8_conf_min) = [0.0] * 12
-
-            writer.writerow([
-                sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
-                round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4),
-                round(mean_confidence, 4), round(mean_entropy, 4),
-                round(conf_std, 4), round(entropy_std, 4), round(conf_1, 4),
-                round(top4_conf_min, 4), round(next4_conf_min, 4),
-                round(top8_conf_min, 4), round(next8_conf_min, 4), sample['block_size'], sample['answer_found'],
-                sample.get('full_confidence_list', []),
-                sample.get('full_entropy_list', []),
-                sample.get('full_token_ids', []),
-                sample.get('full_token_texts', [])
-            ])
+                writer.writerow([
+                    sample_id, 0.0, 0.0, 0, None, None, 0.0,
+                    *([0.0] * 12),
+                    0, False,
+                    sample.get('full_confidence_list', []),
+                    sample.get('full_entropy_list', []),
+                    sample.get('full_token_ids', []),
+                    sample.get('full_token_texts', [])
+                ])
 
     print(f"\n✅ Done (BATCH). Saved {len(training_samples)} samples to:")
     print(f"  📄 JSON: {output_json_path}")
