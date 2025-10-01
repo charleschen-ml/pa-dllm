@@ -130,8 +130,8 @@ df = pd.read_csv("./data/gsm8k_correct.csv")
 # question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?\n"
 # correct_answer = 72
 
-question = df.iloc[1]['question'] # load the first question in df
-correct_answer = int(df.iloc[1]['answer_numerical'])  # extract the correct numerical answer
+question = df.iloc[0]['question'] # load the first question in df
+correct_answer = int(df.iloc[0]['answer_numerical'])  # extract the correct numerical answer
 
 if instruction is not None:
     question = instruction + question

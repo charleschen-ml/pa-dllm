@@ -327,6 +327,18 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     assert steps % num_blocks == 0
     steps_per_block = steps // num_blocks
 
+    # Define helper functions
+    def _entropy(v: float) -> float:
+        return round(-float(v) * float(np.log(max(v, 1e-12))), 4)
+    
+    def _shannon_entropy(probs: torch.Tensor) -> float:
+        """Calculate Shannon entropy over full probability distribution"""
+        # Ensure probabilities are positive and normalized
+        probs = torch.clamp(probs, min=1e-12)
+        probs = probs / probs.sum()  # Normalize just in case
+        entropy = -torch.sum(probs * torch.log(probs))
+        return round(float(entropy), 4)
+
     first_correct_step = None  # Track first step with correct answer
     block_confidences = {}  # Track confidence for each block
     # Track per-step confidences (decoded vs remaining) to print at the end
@@ -350,9 +362,6 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     else:
         logits = model(x).logits
     
-    def _entropy(v: float) -> float:
-        return round(-float(v) * float(np.log(max(v, 1e-12))), 4)
-
     # Calculate cumulative block positions
     block_starts = [0] + [sum(block_sizes[:i]) for i in range(1, len(block_sizes))]
     
@@ -426,6 +435,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             
             initial_confidence = [round(float(initial_conf[i]), 4) for i in range(gen_length)]
             initial_entropy = [_entropy(float(initial_conf[i])) for i in range(gen_length)]
+            initial_shannon_entropy = [_shannon_entropy(gen_probs[i]) for i in range(gen_length)]
             
             # NEW FEATURES: Calculate additional metrics
             additional_features = {}
@@ -436,7 +446,8 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                 
                 # Basic features
                 conf_0 = float(initial_conf[pos])  # Confidence of next token
-                entropy_0 = initial_entropy[pos]  # Entropy of next token
+                entropy_0 = initial_entropy[pos]  # Entropy of next token (self-information)
+                shannon_entropy_0 = initial_shannon_entropy[pos]  # Shannon entropy of full distribution
                 
                 # Top1 margin (difference between top-1 and top-2)
                 pos_top_probs, _ = torch.topk(pos_probs, k=min(2, pos_probs.shape[0]))
@@ -448,11 +459,14 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                 # Global features (mean/std across remaining tokens from current position)
                 remaining_conf = initial_confidence[pos:]
                 remaining_entropy = initial_entropy[pos:]
+                remaining_shannon_entropy = initial_shannon_entropy[pos:]
                 
                 mean_confidence = float(np.mean(remaining_conf)) if remaining_conf else 0.0
                 mean_entropy = float(np.mean(remaining_entropy)) if remaining_entropy else 0.0
+                shannon_mean_entropy = float(np.mean(remaining_shannon_entropy)) if remaining_shannon_entropy else 0.0
                 conf_std = float(np.std(remaining_conf)) if len(remaining_conf) > 1 else 0.0
                 entropy_std = float(np.std(remaining_entropy)) if len(remaining_entropy) > 1 else 0.0
+                shannon_entropy_std = float(np.std(remaining_shannon_entropy)) if len(remaining_shannon_entropy) > 1 else 0.0
                 
                 # Specific position features
                 conf_1 = remaining_conf[1] if len(remaining_conf) > 1 else 0.0  # 2nd token confidence
@@ -477,11 +491,14 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                 additional_features[pos] = {
                     'conf_0': conf_0,
                     'entropy_0': entropy_0,
+                    'shannon_entropy_0': shannon_entropy_0,
                     'top1_margin': top1_margin,
                     'mean_confidence': mean_confidence,
                     'mean_entropy': mean_entropy,
+                    'shannon_mean_entropy': shannon_mean_entropy,
                     'conf_std': conf_std,
                     'entropy_std': entropy_std,
+                    'shannon_entropy_std': shannon_entropy_std,
                     'conf_1': conf_1,
                     'top4_conf_min': top4_conf_min,
                     'next4_conf_min': next4_conf_min,
@@ -574,11 +591,23 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             remaining_conf = [round(float(all_conf[idx]), 4) for idx in remaining_mask_indices]
 
             # Entropy values for decoded vs remaining
-            def _entropy(v: float) -> float:
-                return round(-float(v) * float(np.log(max(v, 1e-12))), 4)
 
             decoded_entropy = [_entropy(float(all_conf[idx])) for idx in decoded_indices]
             remaining_entropy = [_entropy(float(all_conf[idx])) for idx in remaining_mask_indices]
+            
+            # Calculate Shannon entropy for decoded and remaining positions
+            decoded_shannon_entropy = []
+            remaining_shannon_entropy = []
+            
+            for idx in decoded_indices:
+                # Get full probability distribution for this position
+                pos_probs = p[0, idx]  # p is the full softmax probabilities
+                decoded_shannon_entropy.append(_shannon_entropy(pos_probs))
+            
+            for idx in remaining_mask_indices:
+                # Get full probability distribution for this position
+                pos_probs = p[0, idx]  # p is the full softmax probabilities
+                remaining_shannon_entropy.append(_shannon_entropy(pos_probs))
 
             per_step_logs.append({
                 'step': int(total_step),
@@ -589,6 +618,8 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                 'remaining_conf': remaining_conf,
                 'decoded_entropy': decoded_entropy,
                 'remaining_entropy': remaining_entropy,
+                'decoded_shannon_entropy': decoded_shannon_entropy,
+                'remaining_shannon_entropy': remaining_shannon_entropy,
             })
 
             # unmask (freeze) the tokens in x (also using advanced indexing)
@@ -633,10 +664,12 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             print(f"step {log['step']} (block {log['block']}):")
             print(f"  top confidence: {log['decoded_conf']} {log['remaining_conf']}")
             print(f"  entropy: {log['decoded_entropy']} {log['remaining_entropy']}")
+            if 'decoded_shannon_entropy' in log:
+                print(f"  shannon entropy: {log['decoded_shannon_entropy']} {log['remaining_shannon_entropy']}")
         print(f"{'='*60}")
 
     # block_confidences: Final confidence scores for tokens that were actually decoded in each block
-    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features
+    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features, initial_shannon_entropy
 
 def main():
     device = 'cuda'

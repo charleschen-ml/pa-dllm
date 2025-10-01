@@ -26,6 +26,7 @@ def plot_features_vs_labels():
 
     # manual experiment: filter by answer_found
     df = df[df['answer_found'] == False] # always do this
+    # df = df[(df['position_relative'] > 0.7)]
     # df = df[(df['position_relative'] > 0.3) & (df['position_relative'] < 0.7)] # filter for middle positions
     
     print(f"✅ Loaded {len(df)} samples")
@@ -34,8 +35,8 @@ def plot_features_vs_labels():
     # Define the features to plot (excluding non-numeric and identifier columns)
     # Removed redundant features: entropy (use entropy_0), confidence (use conf_0), position (use position_relative)
     feature_columns = [
-        'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
-        'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
+        'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+        'shannon_mean_entropy', 'conf_std', 'entropy_std', 'shannon_entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
         'top8_conf_min', 'next8_conf_min'
     ]
     
@@ -44,7 +45,8 @@ def plot_features_vs_labels():
     print(f"📈 Plotting {len(available_features)} features: {available_features}")
     
     # Label column
-    label_column = 'block_size'
+    # label_column = 'block_size'
+    label_column = 'block_size_rel' # relative block size (block_size / remaining_length)
     
     if label_column not in df.columns:
         print(f"❌ Label column '{label_column}' not found in data")
@@ -139,8 +141,8 @@ def plot_features_vs_labels():
     bars = plt.barh(range(len(sorted_features)), sorted_correlations, color=colors, alpha=0.7)
     
     plt.yticks(range(len(sorted_features)), sorted_features)
-    plt.xlabel('Correlation with block_size')
-    plt.title('Feature Correlations with Block Size')
+    plt.xlabel(f'Correlation with {label_column}')
+    plt.title(f'Feature Correlations with {label_column}')
     plt.grid(True, alpha=0.3, axis='x')
     
     # Add correlation values on bars

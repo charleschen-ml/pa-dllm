@@ -466,7 +466,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
                 
             print(f"Testing position {position} = {sweep_value}")
             
-            out, first_correct_step, block_confidences, initial_entropy, initial_confidence, _, _ = generate_custom(
+            out, first_correct_step, block_confidences, initial_entropy, initial_confidence, _, _, initial_shannon_entropy = generate_custom(
                 model, 
                 tokenizer, # charles added
                 input_ids,
@@ -547,7 +547,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
 
         if final_block_sizes is not None:
             # First, run generate_custom to get the final result and confidences
-            out, _, final_confidences, _, _, _, _ = generate_custom(
+            out, _, final_confidences, _, _, _, _, _ = generate_custom(
                 model,
                 tokenizer,
                 input_ids,
@@ -643,7 +643,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             
         print(f"Testing position {position} = {sweep_value}")
         
-        out, first_correct_step, block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features = generate_custom(
+        out, first_correct_step, block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features, initial_shannon_entropy = generate_custom(
             model, 
             tokenizer, # charles added
             input_ids,
@@ -744,7 +744,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 
         if final_block_sizes is not None:
             # First, run generate_custom to get the final result and confidences
-            out, _, final_confidences, _, _, _, _ = generate_custom(
+            out, _, final_confidences, _, _, _, _, _ = generate_custom(
                 model,
                 tokenizer,
                 input_ids,
@@ -809,12 +809,15 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
                 confidence, entropy, position, token_id, token_text,
                 position_relative,
                 additional_feats.get('conf_0', 0.0),
-                additional_feats.get('entropy_0', 0.0), 
+                additional_feats.get('entropy_0', 0.0),
+                additional_feats.get('shannon_entropy_0', 0.0),
                 additional_feats.get('top1_margin', 0.0),
                 additional_feats.get('mean_confidence', 0.0),
                 additional_feats.get('mean_entropy', 0.0),
+                additional_feats.get('shannon_mean_entropy', 0.0),
                 additional_feats.get('conf_std', 0.0),
                 additional_feats.get('entropy_std', 0.0),
+                additional_feats.get('shannon_entropy_std', 0.0),
                 additional_feats.get('conf_1', 0.0),
                 additional_feats.get('top4_conf_min', 0.0),
                 additional_feats.get('next4_conf_min', 0.0),
@@ -827,7 +830,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             # Calculate position_relative for default row too
             position_relative = round(position / gen_length, 4)
             # Default feature row with zeros for missing data
-            default_row = [0.0, 0.0, position, None, None, position_relative] + [0.0] * 12  # 12 additional features
+            default_row = [0.0, 0.0, position, None, None, position_relative] + [0.0] * 15  # 15 additional features
             features.append(default_row)
     
     # Create training sample with full lists preserved
@@ -848,9 +851,14 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
                 full_token_texts.append(None)
     
     # Use the autoregressive confidence/entropy lists we calculated earlier
+    block_size = best_value if best_value is not None else 1
+    remaining_length = gen_length - curr_pos
+    block_size_rel = round(block_size / remaining_length, 4) if remaining_length > 0 else 0.0
+    
     training_sample = {
         "features": features,
-        "block_size": best_value if best_value is not None else 1,
+        "block_size": block_size,
+        "block_size_rel": block_size_rel,
         "full_confidence_list": autoregressive_confidence,  # Forward-looking confidence from curr_pos
         "full_entropy_list": autoregressive_entropy,        # Forward-looking entropy from curr_pos
         "full_token_ids": full_token_ids,
@@ -981,9 +989,9 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
         # Write header
         header = [
             'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
-            'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
-            'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
-            'top8_conf_min', 'next8_conf_min', 'block_size', 'answer_found',
+            'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+            'shannon_mean_entropy', 'conf_std', 'entropy_std', 'shannon_entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
+            'top8_conf_min', 'next8_conf_min', 'block_size', 'block_size_rel', 'answer_found',
             'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts'
         ]
         writer.writerow(header)
@@ -994,26 +1002,27 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             # Each sample now has exactly one feature row
             if sample['features']:  # Check if features exist
                 feature = sample['features'][0]  # Get the single feature row
-                if len(feature) >= 18:  # Full feature row (now has 18 features with position_relative)
+                if len(feature) >= 21:  # Full feature row (now has 21 features with shannon stats)
                     (confidence, entropy, position, token_id, token_text, position_relative,
-                     conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
-                     conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
-                     top8_conf_min, next8_conf_min) = feature
+                     conf_0, entropy_0, shannon_entropy_0, top1_margin, mean_confidence, mean_entropy,
+                     shannon_mean_entropy, conf_std, entropy_std, shannon_entropy_std, conf_1, 
+                     top4_conf_min, next4_conf_min, top8_conf_min, next8_conf_min) = feature
                 else:  # Fallback for incomplete rows
                     confidence, entropy, position = feature[:3]
                     token_id, token_text = feature[3:5] if len(feature) > 4 else (None, None)
                     position_relative = feature[5] if len(feature) > 5 else 0.0
-                    (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
-                     conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
-                     top8_conf_min, next8_conf_min) = [0.0] * 12
+                    (conf_0, entropy_0, shannon_entropy_0, top1_margin, mean_confidence, mean_entropy,
+                     shannon_mean_entropy, conf_std, entropy_std, shannon_entropy_std, conf_1, 
+                     top4_conf_min, next4_conf_min, top8_conf_min, next8_conf_min) = [0.0] * 15
                 
                 writer.writerow([
                     sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
-                    round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
-                    round(mean_confidence, 4), round(mean_entropy, 4),
-                    round(conf_std, 4), round(entropy_std, 4), round(conf_1, 4), 
-                    round(top4_conf_min, 4), round(next4_conf_min, 4),
-                    round(top8_conf_min, 4), round(next8_conf_min, 4), block_size, sample.get('answer_found', False),
+                    round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(shannon_entropy_0, 4),
+                    round(top1_margin, 4), round(mean_confidence, 4), round(mean_entropy, 4),
+                    round(shannon_mean_entropy, 4), round(conf_std, 4), round(entropy_std, 4), 
+                    round(shannon_entropy_std, 4), round(conf_1, 4), round(top4_conf_min, 4), 
+                    round(next4_conf_min, 4), round(top8_conf_min, 4), round(next8_conf_min, 4), 
+                    block_size, sample.get('block_size_rel', 0.0), sample.get('answer_found', False),
                     sample.get('full_confidence_list', []),
                     sample.get('full_entropy_list', []),
                     sample.get('full_token_ids', []),
@@ -1021,7 +1030,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
                 ])
             else:
                 # No features available, write a default row
-                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], []])
+                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 15 + [1, 0.0, False, [], [], [], []])
     
     print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
     print(f"  📄 JSON: {json_output_path}")
@@ -1095,6 +1104,7 @@ def generate_custom_batch(
                 initial_confidence,
                 ar_context_tokens,
                 additional_features,
+                initial_shannon_entropy,
             ) = generate_custom(
                 model,
                 tokenizer,
@@ -1200,7 +1210,7 @@ def generate_custom_batch_parallel(
         (
             out, first_correct_step, block_confidences,
             initial_entropy, initial_confidence,
-            ar_context_tokens, additional_features
+            ar_context_tokens, additional_features, initial_shannon_entropy
         ) = generate_custom(
             model, tokenizer, x_in,
             steps=steps, gen_length=gen_length,
@@ -1346,11 +1356,14 @@ def augment_one_sample_batch(
                 position_relative,
                 additional_feats.get("conf_0", 0.0),
                 additional_feats.get("entropy_0", 0.0),
+                additional_feats.get("shannon_entropy_0", 0.0),
                 additional_feats.get("top1_margin", 0.0),
                 additional_feats.get("mean_confidence", 0.0),
                 additional_feats.get("mean_entropy", 0.0),
+                additional_feats.get("shannon_mean_entropy", 0.0),
                 additional_feats.get("conf_std", 0.0),
                 additional_feats.get("entropy_std", 0.0),
+                additional_feats.get("shannon_entropy_std", 0.0),
                 additional_feats.get("conf_1", 0.0),
                 additional_feats.get("top4_conf_min", 0.0),
                 additional_feats.get("next4_conf_min", 0.0),
@@ -1359,9 +1372,13 @@ def augment_one_sample_batch(
             ]
             features.append(feature_row)
 
+        remaining_length = gen_length - curr_pos
+        block_size_rel = round(block_size / remaining_length, 4) if remaining_length > 0 else 0.0
+        
         sample = {
             "features": features,
             "block_size": block_size,
+            "block_size_rel": block_size_rel,
             "full_confidence_list": res["initial_confidence"],
             "full_entropy_list": res["initial_entropy"],
             "full_token_ids": res["ar_context_tokens"].tolist() if res["ar_context_tokens"] is not None else [],
@@ -1599,9 +1616,9 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
         # Write header (same as augment_one_sample)
         header = [
             'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
-            'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
-            'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
-            'top8_conf_min', 'next8_conf_min', 'block_size', 'answer_found',
+            'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+            'shannon_mean_entropy', 'conf_std', 'entropy_std', 'shannon_entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
+            'top8_conf_min', 'next8_conf_min', 'block_size', 'block_size_rel', 'answer_found',
             'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts',
             'question_id', 'question'  # Add question metadata at the end
         ]
