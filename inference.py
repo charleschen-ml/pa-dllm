@@ -1562,6 +1562,158 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
     
     return all_training_samples
 
+
+def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_length, steps, 
+                     break_after_answer_found, instruction):
+    """Worker function that processes questions on a specific GPU (module-level for pickling)"""
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    
+    # Set device for this worker
+    device = torch.device(f"cuda:{gpu_id}")
+    print(f"[GPU {gpu_id}] Worker started, processing {len(df_subset)} questions")
+    
+    # Load model and tokenizer on this GPU
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        padding_side="left",
+        trust_remote_code=model_args.trust_remote_code,
+    )
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    if tokenizer.chat_template is None:
+        tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
+    
+    model = AutoModelForCausalLM.from_pretrained(
+        model_args.model_name_or_path,
+        trust_remote_code=model_args.trust_remote_code,
+    ).to(device)
+    model.eval()
+    
+    print(f"[GPU {gpu_id}] Model loaded")
+    
+    # Process questions
+    worker_samples = []
+    for local_idx, row_idx in enumerate(df_subset.index):
+        question = df_subset.loc[row_idx, 'question']
+        correct_answer = int(df_subset.loc[row_idx, 'answer_numerical'])
+        
+        if instruction is not None:
+            question = instruction + question
+        prompt = question
+        
+        print(f"[GPU {gpu_id}] Processing question {local_idx+1}/{len(df_subset)}: {question[:50]}...")
+        
+        # Generate training samples for this question
+        question_samples = augment_one_sample(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            prompt=prompt,
+            model_args=model_args,
+            gen_length=gen_length,
+            base_block_length=base_block_length,
+            steps=steps,
+            correct_answer=correct_answer,
+            break_after_answer_found=break_after_answer_found,
+            save_to_file=False
+        )
+        
+        # Add question metadata
+        for sample in question_samples:
+            sample['question_id'] = row_idx
+            sample['question'] = question
+        
+        worker_samples.extend(question_samples)
+        print(f"[GPU {gpu_id}] Generated {len(question_samples)} samples for question {local_idx+1}")
+    
+    print(f"[GPU {gpu_id}] Worker finished, generated {len(worker_samples)} total samples")
+    return worker_samples
+
+
+def augment_multiple_samples_parallel(
+    model_args, csv_path, num_questions=2, 
+    gen_length=32, base_block_length=1, steps=32, break_after_answer_found=True,
+    output_json_path="./data/sft_training_samples_multi_greedy.json",
+    output_csv_path="./data/sft_training_samples_multi_greedy.csv",
+    instruction=None, num_gpus=2
+):
+    """
+    Parallel version: process multiple questions across multiple GPUs.
+    
+    Args:
+        model_args: Model arguments for loading
+        csv_path: Path to CSV file containing questions
+        num_questions: Number of questions to process
+        gen_length: Generation length
+        base_block_length: Base block length
+        steps: Number of steps
+        break_after_answer_found: Whether to break after answer found
+        output_json_path: Output JSON file path
+        output_csv_path: Output CSV file path
+        instruction: Instruction to prepend to each question
+        num_gpus: Number of GPUs to use (default: 2)
+    
+    Returns:
+        List of all training samples across all questions
+    """
+    import pandas as pd
+    import torch.multiprocessing as mp
+    from functools import partial
+    
+    # Load questions
+    df = pd.read_csv(csv_path)
+    df = df.head(num_questions)
+    print(f"Processing {len(df)} questions across {num_gpus} GPUs")
+    
+    # Split questions across GPUs
+    questions_per_gpu = len(df) // num_gpus
+    question_splits = []
+    for gpu_id in range(num_gpus):
+        start_idx = gpu_id * questions_per_gpu
+        if gpu_id == num_gpus - 1:
+            # Last GPU gets remaining questions
+            end_idx = len(df)
+        else:
+            end_idx = start_idx + questions_per_gpu
+        question_splits.append((gpu_id, df.iloc[start_idx:end_idx]))
+    
+    print(f"Split: {[len(split[1]) for split in question_splits]} questions per GPU")
+    
+    # Use multiprocessing to run workers in parallel
+    mp.set_start_method('spawn', force=True)
+    
+    with mp.Pool(processes=num_gpus) as pool:
+        # Create partial function with fixed arguments
+        worker_fn = partial(
+            _parallel_worker,
+            model_args=model_args,
+            gen_length=gen_length,
+            base_block_length=base_block_length,
+            steps=steps,
+            break_after_answer_found=break_after_answer_found,
+            instruction=instruction
+        )
+        
+        # Map workers to GPUs
+        results = pool.starmap(worker_fn, [(gpu_id, df_subset) for gpu_id, df_subset in question_splits])
+    
+    # Aggregate results from all workers
+    all_training_samples = []
+    for worker_results in results:
+        all_training_samples.extend(worker_results)
+    
+    print(f"\n{'='*60}")
+    print(f"All workers complete! Total samples: {len(all_training_samples)}")
+    print(f"{'='*60}")
+    
+    # Save to JSON and CSV files
+    write_to_json_csv(all_training_samples, output_json_path, output_csv_path, include_question_metadata=True)
+    
+    print(f"  📈 Samples per question: {len(all_training_samples) / len(df):.1f} avg")
+    
+    return all_training_samples
+
+
 if __name__ == "__main__":
     # Parse HF script_args, model_args
     parser = make_parser()
