@@ -952,7 +952,7 @@ def write_to_json_csv(training_samples, json_output_path="./data/sft_training_sa
     print(f"  📊 CSV:  {csv_output_path}")
 
 
-def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None, save_to_file=True):
+def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None, save_to_file=True, disable_tqdm=False):
     """
     Generate training samples by collecting confidence/entropy data at different curr_pos values,
     and optionally save them to JSON and CSV files.
@@ -995,7 +995,10 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
     training_samples = []
     manual_settings = {}
     
-    for curr_pos in tqdm(range(gen_length), desc="Processing positions", unit="pos", leave=False):
+    # Use tqdm only if not disabled (disable in parallel mode to avoid cross-process locks)
+    curr_pos_iterator = range(gen_length) if disable_tqdm else tqdm(range(gen_length), desc="Processing positions", unit="pos", leave=False)
+    
+    for curr_pos in curr_pos_iterator:
         print(f"\n=== curr_pos = {curr_pos} ===")
         if curr_pos > 0:  # empty for the first iteration
             manual_settings[curr_pos-1] = 1  # decode 1 token at a time for all previous positions
@@ -1564,14 +1567,30 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
 
 
 def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_length, steps, 
-                     break_after_answer_found, instruction):
+                     break_after_answer_found, instruction, result_queue):
     """Worker function that processes questions on a specific GPU (module-level for pickling)"""
+    import sys
+    import os
+    
+    # CRITICAL: Set CUDA_VISIBLE_DEVICES BEFORE importing torch!
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    
+    # NOW import torch after GPU is isolated
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM
     
-    # Set device for this worker
-    device = torch.device(f"cuda:{gpu_id}")
-    print(f"[GPU {gpu_id}] Worker started, processing {len(df_subset)} questions")
+    # SUPPRESS VERBOSE OUTPUT TO AVOID I/O OVERHEAD IN PARALLEL MODE
+    # Redirect stdout to devnull to silence all print statements
+    # But keep stderr for critical messages
+    original_stdout = sys.stdout
+    sys.stdout = open(os.devnull, 'w')
+    
+    import time
+    start_time = time.time()
+    
+    # Set device - now it's cuda:0 because CUDA_VISIBLE_DEVICES masks the physical GPU
+    device = torch.device("cuda:0")
+    print(f"[GPU {gpu_id}] Worker started at {start_time:.2f} (physical GPU {gpu_id}, isolated via CUDA_VISIBLE_DEVICES)", file=sys.stderr)
     
     # Load model and tokenizer on this GPU
     tokenizer = AutoTokenizer.from_pretrained(
@@ -1583,13 +1602,25 @@ def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_lengt
     if tokenizer.chat_template is None:
         tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
     
-    model = AutoModelForCausalLM.from_pretrained(
+    model_load_start = time.time()
+    
+    # FAST MODEL LOADING: Use same method as sequential mode (cached weights)
+    # Load model architecture first
+    from transformers import AutoModel
+    model = AutoModel.from_pretrained(
         model_args.model_name_or_path,
         trust_remote_code=model_args.trust_remote_code,
-    ).to(device)
-    model.eval()
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True
+    )
+    # Load saved weights (much faster than downloading)
+    state_dict = torch.load('./cache/model_weights.pt', weights_only=True, map_location='cpu')
+    model.load_state_dict(state_dict)
+    # Move to device
+    model = model.to(device).eval()
     
-    print(f"[GPU {gpu_id}] Model loaded")
+    model_load_end = time.time()
+    print(f"[GPU {gpu_id}] Model loaded in {model_load_end - model_load_start:.1f}s (from cached weights), processing {len(df_subset)} questions (at {model_load_end:.2f})", file=sys.stderr)
     
     # Process questions
     worker_samples = []
@@ -1601,9 +1632,7 @@ def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_lengt
             question = instruction + question
         prompt = question
         
-        print(f"[GPU {gpu_id}] Processing question {local_idx+1}/{len(df_subset)}: {question[:50]}...")
-        
-        # Generate training samples for this question
+        # Generate training samples for this question (all print statements suppressed)
         question_samples = augment_one_sample(
             model=model,
             tokenizer=tokenizer,
@@ -1615,7 +1644,8 @@ def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_lengt
             steps=steps,
             correct_answer=correct_answer,
             break_after_answer_found=break_after_answer_found,
-            save_to_file=False
+            save_to_file=False,
+            disable_tqdm=True  # CRITICAL: Disable tqdm to avoid cross-process terminal locks
         )
         
         # Add question metadata
@@ -1624,10 +1654,12 @@ def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_lengt
             sample['question'] = question
         
         worker_samples.extend(question_samples)
-        print(f"[GPU {gpu_id}] Generated {len(question_samples)} samples for question {local_idx+1}")
+        print(f"[GPU {gpu_id}] Question {local_idx+1}/{len(df_subset)} done ({len(question_samples)} samples)", file=sys.stderr)
     
-    print(f"[GPU {gpu_id}] Worker finished, generated {len(worker_samples)} total samples")
-    return worker_samples
+    end_time = time.time()
+    elapsed = end_time - start_time
+    print(f"[GPU {gpu_id}] Worker complete: {len(worker_samples)} total samples in {elapsed:.1f}s (finished at {end_time:.2f})", file=sys.stderr)
+    result_queue.put((gpu_id, worker_samples))
 
 
 def augment_multiple_samples_parallel(
@@ -1658,7 +1690,12 @@ def augment_multiple_samples_parallel(
     """
     import pandas as pd
     import torch.multiprocessing as mp
-    from functools import partial
+    
+    # Set start method for multiprocessing (needed for CUDA)
+    try:
+        mp.set_start_method('spawn')
+    except RuntimeError:
+        pass  # Already set
     
     # Load questions
     df = pd.read_csv(csv_path)
@@ -1679,28 +1716,29 @@ def augment_multiple_samples_parallel(
     
     print(f"Split: {[len(split[1]) for split in question_splits]} questions per GPU")
     
-    # Use multiprocessing to run workers in parallel
-    mp.set_start_method('spawn', force=True)
+    # Create a queue for results
+    result_queue = mp.Queue()
     
-    with mp.Pool(processes=num_gpus) as pool:
-        # Create partial function with fixed arguments
-        worker_fn = partial(
-            _parallel_worker,
-            model_args=model_args,
-            gen_length=gen_length,
-            base_block_length=base_block_length,
-            steps=steps,
-            break_after_answer_found=break_after_answer_found,
-            instruction=instruction
+    # Create and start worker processes
+    processes = []
+    for gpu_id, df_subset in question_splits:
+        p = mp.Process(
+            target=_parallel_worker,
+            args=(gpu_id, df_subset, model_args, gen_length, base_block_length, 
+                  steps, break_after_answer_found, instruction, result_queue)
         )
-        
-        # Map workers to GPUs
-        results = pool.starmap(worker_fn, [(gpu_id, df_subset) for gpu_id, df_subset in question_splits])
+        p.start()
+        processes.append(p)
     
-    # Aggregate results from all workers
+    # Collect results from queue
     all_training_samples = []
-    for worker_results in results:
-        all_training_samples.extend(worker_results)
+    for _ in range(len(processes)):
+        gpu_id, worker_samples = result_queue.get()
+        all_training_samples.extend(worker_samples)
+    
+    # Wait for all processes to complete
+    for p in processes:
+        p.join()
     
     print(f"\n{'='*60}")
     print(f"All workers complete! Total samples: {len(all_training_samples)}")
