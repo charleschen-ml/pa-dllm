@@ -130,8 +130,8 @@ df = pd.read_csv("./data/gsm8k_correct.csv")
 # question = "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?\n"
 # correct_answer = 72
 
-question = df.iloc[0]['question'] # load the first question in df
-correct_answer = int(df.iloc[0]['answer_numerical'])  # extract the correct numerical answer
+question = df.iloc[1]['question'] # load the first question in df
+correct_answer = int(df.iloc[1]['answer_numerical'])  # extract the correct numerical answer
 
 if instruction is not None:
     question = instruction + question
@@ -170,24 +170,24 @@ prompt = question
 ########################################################
 # Augment one sample
 ########################################################
-print("🚀 Starting augment_multiple_samples...")
-start_time = time.time()
-training_samples = augment_one_sample(
-    model=model,
-    tokenizer=tokenizer,
-    device=device,
-    prompt=prompt,
-    model_args=model_args,
-    gen_length=32,
-    base_block_length=1,
-    steps=32,
-    correct_answer=correct_answer,
-    break_after_answer_found=True  # Set to False to continue augmentation after answer found
-)
-end_time = time.time()
-elapsed_time = end_time - start_time
-print(f"\n⏱️  TIMING REPORT:")
-print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+# print("🚀 Starting augment_multiple_samples...")
+# start_time = time.time()
+# training_samples = augment_one_sample(
+#     model=model,
+#     tokenizer=tokenizer,
+#     device=device,
+#     prompt=prompt,
+#     model_args=model_args,
+#     gen_length=32,
+#     base_block_length=1,
+#     steps=32,
+#     correct_answer=correct_answer,
+#     break_after_answer_found=True  # Set to False to continue augmentation after answer found
+# )
+# end_time = time.time()
+# elapsed_time = end_time - start_time
+# print(f"\n⏱️  TIMING REPORT:")
+# print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
 
 ########################################################
 # Augment one sample (BATCHED)
@@ -215,29 +215,29 @@ print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} 
 ########################################################
 # Augment multiple samples
 ########################################################
-# print("🚀 Starting augment_multiple_samples...")
-# start_time = time.time()
+print("🚀 Starting augment_multiple_samples...")
+start_time = time.time()
 
-# all_training_samples = augment_multiple_samples(
-#     model=model,
-#     tokenizer=tokenizer,
-#     device=device,
-#     model_args=model_args,
-#     csv_path="./data/gsm8k_correct.csv",
-#     num_questions=1,  # Change this to any number you want
-#     gen_length=128,
-#     base_block_length=1,
-#     steps=128,
-#     break_after_answer_found=True,
-#     output_json_path="./data/sft_training_samples_multi_greedy.json",
-#     output_csv_path="./data/sft_training_samples_multi_greedy.csv",
-#     instruction=instruction
-# )
+all_training_samples = augment_multiple_samples(
+    model=model,
+    tokenizer=tokenizer,
+    device=device,
+    model_args=model_args,
+    csv_path="./data/gsm8k_correct.csv",
+    num_questions=2,  # Change this to any number you want
+    gen_length=32,
+    base_block_length=1,
+    steps=32,
+    break_after_answer_found=True,
+    output_json_path="./data/sft_training_samples_multi_greedy.json",
+    output_csv_path="./data/sft_training_samples_multi_greedy.csv",
+    instruction=instruction
+)
 
-# end_time = time.time()
-# elapsed_time = end_time - start_time
-# print(f"\n⏱️  TIMING REPORT:")
-# print(f"  📊 Total samples generated: {len(all_training_samples)}")
-# print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
-# print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
-# print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
+end_time = time.time()
+elapsed_time = end_time - start_time
+print(f"\n⏱️  TIMING REPORT:")
+print(f"  📊 Total samples generated: {len(all_training_samples)}")
+print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
+print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")

@@ -871,10 +871,91 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
 
     return training_sample
 
-def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None):
+def write_to_json_csv(training_samples, json_output_path="./data/sft_training_samples_greedy.json", 
+                      csv_output_path="./data/sft_training_samples_greedy.csv", include_question_metadata=False):
+    """
+    Write training samples to JSON and CSV files.
+    
+    Args:
+        training_samples: List of training samples to save
+        json_output_path: Path to save JSON file
+        csv_output_path: Path to save CSV file
+        include_question_metadata: If True, include question_id and question columns in CSV
+    """
+    import json
+    import csv
+    
+    # Save to JSON file
+    with open(json_output_path, "w") as f:
+        json.dump(training_samples, f, indent=2)
+    
+    # Save to CSV file for easier review
+    with open(csv_output_path, "w", newline='') as f:
+        writer = csv.writer(f)
+        
+        # Write header
+        header = [
+            'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
+            'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
+            'shannon_mean_entropy', 'conf_std', 'entropy_std', 'shannon_entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
+            'top8_conf_min', 'next8_conf_min', 'block_size', 'block_size_rel', 'answer_found',
+            'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts'
+        ]
+        if include_question_metadata:
+            header.extend(['question_id', 'question'])
+        writer.writerow(header)
+        
+        # Write data
+        for sample_id, sample in enumerate(training_samples):
+            block_size = sample['block_size']
+            # Each sample now has exactly one feature row
+            if sample['features']:  # Check if features exist
+                feature = sample['features'][0]  # Get the single feature row
+                if len(feature) >= 21:  # Full feature row (now has 21 features with shannon stats)
+                    (confidence, entropy, position, token_id, token_text, position_relative,
+                     conf_0, entropy_0, shannon_entropy_0, top1_margin, mean_confidence, mean_entropy,
+                     shannon_mean_entropy, conf_std, entropy_std, shannon_entropy_std, conf_1, 
+                     top4_conf_min, next4_conf_min, top8_conf_min, next8_conf_min) = feature
+                else:  # Fallback for incomplete rows
+                    confidence, entropy, position = feature[:3]
+                    token_id, token_text = feature[3:5] if len(feature) > 4 else (None, None)
+                    position_relative = feature[5] if len(feature) > 5 else 0.0
+                    (conf_0, entropy_0, shannon_entropy_0, top1_margin, mean_confidence, mean_entropy,
+                     shannon_mean_entropy, conf_std, entropy_std, shannon_entropy_std, conf_1, 
+                     top4_conf_min, next4_conf_min, top8_conf_min, next8_conf_min) = [0.0] * 15
+                
+                row = [
+                    sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
+                    round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(shannon_entropy_0, 4),
+                    round(top1_margin, 4), round(mean_confidence, 4), round(mean_entropy, 4),
+                    round(shannon_mean_entropy, 4), round(conf_std, 4), round(entropy_std, 4), 
+                    round(shannon_entropy_std, 4), round(conf_1, 4), round(top4_conf_min, 4), 
+                    round(next4_conf_min, 4), round(top8_conf_min, 4), round(next8_conf_min, 4), 
+                    block_size, sample.get('block_size_rel', 0.0), sample.get('answer_found', False),
+                    sample.get('full_confidence_list', []),
+                    sample.get('full_entropy_list', []),
+                    sample.get('full_token_ids', []),
+                    sample.get('full_token_texts', [])
+                ]
+                if include_question_metadata:
+                    row.extend([sample.get('question_id', ''), sample.get('question', '')])
+                writer.writerow(row)
+            else:
+                # No features available, write a default row
+                row = [sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 15 + [1, 0.0, False, [], [], [], []]
+                if include_question_metadata:
+                    row.extend([sample.get('question_id', ''), sample.get('question', '')])
+                writer.writerow(row)
+    
+    print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
+    print(f"  📄 JSON: {json_output_path}")
+    print(f"  📊 CSV:  {csv_output_path}")
+
+
+def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None, save_to_file=True):
     """
     Generate training samples by collecting confidence/entropy data at different curr_pos values,
-    and save them to JSON and CSV files.
+    and optionally save them to JSON and CSV files.
     
     Args:
         model: The model to use for generation
@@ -888,6 +969,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
         correct_answer: Expected correct answer for checking correctness (optional)
         break_after_answer_found: If True, stop augmentation after first answer_found=True (default: True)
         instruction: Optional instruction to prepend to prompt. If provided, prompt becomes instruction + prompt.
+        save_to_file: If True, save to JSON/CSV files. If False, only return samples (default: True)
     
     Returns:
         List of training samples, each containing features and block_size
@@ -974,67 +1056,9 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
                 # If we found <eot_id>, break out of the main loop
                 break
     
-    # Save to JSON file
-    import json
-    json_output_path = "./data/sft_training_samples_greedy.json"
-    with open(json_output_path, "w") as f:
-        json.dump(training_samples, f, indent=2)
-    
-    # Save to CSV file for easier review
-    import csv
-    csv_output_path = "./data/sft_training_samples_greedy.csv"
-    with open(csv_output_path, "w", newline='') as f:
-        writer = csv.writer(f)
-        
-        # Write header
-        header = [
-            'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
-            'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
-            'shannon_mean_entropy', 'conf_std', 'entropy_std', 'shannon_entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
-            'top8_conf_min', 'next8_conf_min', 'block_size', 'block_size_rel', 'answer_found',
-            'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts'
-        ]
-        writer.writerow(header)
-        
-        # Write data
-        for sample_id, sample in enumerate(training_samples):
-            block_size = sample['block_size']
-            # Each sample now has exactly one feature row
-            if sample['features']:  # Check if features exist
-                feature = sample['features'][0]  # Get the single feature row
-                if len(feature) >= 21:  # Full feature row (now has 21 features with shannon stats)
-                    (confidence, entropy, position, token_id, token_text, position_relative,
-                     conf_0, entropy_0, shannon_entropy_0, top1_margin, mean_confidence, mean_entropy,
-                     shannon_mean_entropy, conf_std, entropy_std, shannon_entropy_std, conf_1, 
-                     top4_conf_min, next4_conf_min, top8_conf_min, next8_conf_min) = feature
-                else:  # Fallback for incomplete rows
-                    confidence, entropy, position = feature[:3]
-                    token_id, token_text = feature[3:5] if len(feature) > 4 else (None, None)
-                    position_relative = feature[5] if len(feature) > 5 else 0.0
-                    (conf_0, entropy_0, shannon_entropy_0, top1_margin, mean_confidence, mean_entropy,
-                     shannon_mean_entropy, conf_std, entropy_std, shannon_entropy_std, conf_1, 
-                     top4_conf_min, next4_conf_min, top8_conf_min, next8_conf_min) = [0.0] * 15
-                
-                writer.writerow([
-                    sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
-                    round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(shannon_entropy_0, 4),
-                    round(top1_margin, 4), round(mean_confidence, 4), round(mean_entropy, 4),
-                    round(shannon_mean_entropy, 4), round(conf_std, 4), round(entropy_std, 4), 
-                    round(shannon_entropy_std, 4), round(conf_1, 4), round(top4_conf_min, 4), 
-                    round(next4_conf_min, 4), round(top8_conf_min, 4), round(next8_conf_min, 4), 
-                    block_size, sample.get('block_size_rel', 0.0), sample.get('answer_found', False),
-                    sample.get('full_confidence_list', []),
-                    sample.get('full_entropy_list', []),
-                    sample.get('full_token_ids', []),
-                    sample.get('full_token_texts', [])
-                ])
-            else:
-                # No features available, write a default row
-                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 15 + [1, 0.0, False, [], [], [], []])
-    
-    print(f"\n✅ Done. Saved {len(training_samples)} samples to:")
-    print(f"  📄 JSON: {json_output_path}")
-    print(f"  📊 CSV:  {csv_output_path}")
+    # Save to JSON and CSV files (only if save_to_file is True)
+    if save_to_file:
+        write_to_json_csv(training_samples)
     
     return training_samples
 
@@ -1445,81 +1469,6 @@ def main(script_args, model_args, inference_args):
         script_args, training_args, model_args: Standard TRL arguments
         inference_args: InferenceArguments object containing inference-specific parameters
     """
-    # # Convert string arguments to lists if they're strings
-    # if isinstance(inference_args.bit_choices, str):
-    #     bit_choices = [int(x.strip()) for x in inference_args.bit_choices.split(",")]
-    # else:
-    #     bit_choices = inference_args.bit_choices
-        
-    # if isinstance(inference_args.quant_layers, str):
-    #     quant_layers = [int(x.strip()) for x in inference_args.quant_layers.split(",")]
-    # else:
-    #     quant_layers = inference_args.quant_layers
-    
-    # # Load validation examples from JSON
-    # # with open(inference_args.eval_json_path, "r") as f:
-    # #     dataset = [json.loads(line) for line in f][:inference_args.max_inf_size]
-    # # print(f"Examples used for inference: {len(dataset)}")
-
-    # ################
-    # # Model & Tokenizer
-    # ################
-    # quantization_config = get_quantization_config(model_args)
-
-    # # load tokenizer
-    # tokenizer = AutoTokenizer.from_pretrained(
-    #     model_args.model_name_or_path, 
-    #     padding_side="left", 
-    #     trust_remote_code=model_args.trust_remote_code,
-    # )
-    # tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    # if tokenizer.chat_template is None:
-    #     tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
-
-    # # load base model
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # model = AutoModelForCausalLM.from_pretrained(
-    #     model_args.model_name_or_path, 
-    #     trust_remote_code=model_args.trust_remote_code,
-    # ).to(device)
-    # print(f"Loaded base model path: {model_args.model_name_or_path}")
-
-    # ################
-    # # Inference
-    # ################
-
-    # # Inference loop
-    # predictions, references = [], []
-
-    # print("\nINFERENCE:\n")
-
-    # question = "What is 2*2?"
-    # prompt = f"{question}\n"
-    # print(f"prompt = \n{prompt}")
-
-    # inputs = tokenizer(
-    #     prompt,
-    #     return_tensors="pt",
-    #     padding=True,
-    #     truncation=True,
-    #     max_length=512,
-    # ).to(device)
-
-    # with torch.no_grad():
-    #     outputs = model.generate(
-    #         **inputs,
-    #         max_new_tokens=32,
-    #         do_sample=False,
-    #         use_cache=False, # required to disable KV cache
-    #         eos_token_id=tokenizer.eos_token_id,
-    #         pad_token_id=tokenizer.eos_token_id
-    #     )
-
-    # generated = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True).strip()
-    # # generated_truncated = generated.split("\n")[0].strip()
-
-    # print(f"generated=\n{generated}")
-
     return 0
 
 def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num_questions=2, 
@@ -1590,7 +1539,8 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
             base_block_length=base_block_length,
             steps=steps,
             correct_answer=correct_answer,
-            break_after_answer_found=break_after_answer_found
+            break_after_answer_found=break_after_answer_found,
+            save_to_file=False  # Don't save intermediate files, will save all at the end
         )
         
         # Add question metadata to each sample
@@ -1605,68 +1555,9 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
     print(f"\n{'='*60}")
     print(f"Saving {len(all_training_samples)} total training samples...")
 
-    # Save to JSON file
-    with open(output_json_path, "w") as f:
-        json.dump(all_training_samples, f, indent=2)
-
-    # Save to CSV file for easier review (same format as augment_one_sample)
-    with open(output_csv_path, "w", newline='') as f:
-        writer = csv.writer(f)
-        
-        # Write header (same as augment_one_sample)
-        header = [
-            'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text', 
-            'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
-            'shannon_mean_entropy', 'conf_std', 'entropy_std', 'shannon_entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
-            'top8_conf_min', 'next8_conf_min', 'block_size', 'block_size_rel', 'answer_found',
-            'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts',
-            'question_id', 'question'  # Add question metadata at the end
-        ]
-        writer.writerow(header)
-        
-        # Write data (same format as augment_one_sample)
-        for sample_id, sample in enumerate(all_training_samples):
-            block_size = sample['block_size']
-            question_id = sample['question_id']
-            question = sample['question']
-            
-            # Process each feature row (same logic as augment_one_sample)
-            features = sample.get('features', [])
-            if features:
-                for feature in features:
-                    if len(feature) >= 13:  # Full feature set
-                        confidence, entropy, position, token_id, token_text, position_relative = feature[:6]
-                        (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
-                         conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
-                         top8_conf_min, next8_conf_min) = feature[6:18] if len(feature) >= 18 else feature[6:6+12]
-                    else:
-                        # Handle incomplete features
-                        confidence, entropy, position = feature[:3]
-                        token_id, token_text, position_relative = feature[3:6] if len(feature) > 3 else [None, None, 0.0]
-                        (conf_0, entropy_0, top1_margin, mean_confidence, mean_entropy,
-                         conf_std, entropy_std, conf_1, top4_conf_min, next4_conf_min,
-                         top8_conf_min, next8_conf_min) = [0.0] * 12
-                    
-                    writer.writerow([
-                        sample_id, round(confidence, 4), round(entropy, 4), position, token_id, token_text,
-                        round(position_relative, 4), round(conf_0, 4), round(entropy_0, 4), round(top1_margin, 4), 
-                        round(mean_confidence, 4), round(mean_entropy, 4),
-                        round(conf_std, 4), round(entropy_std, 4), round(conf_1, 4), 
-                        round(top4_conf_min, 4), round(next4_conf_min, 4),
-                        round(top8_conf_min, 4), round(next8_conf_min, 4), block_size, sample.get('answer_found', False),
-                        sample.get('full_confidence_list', []),
-                        sample.get('full_entropy_list', []),
-                        sample.get('full_token_ids', []),
-                        sample.get('full_token_texts', []),
-                        question_id, question
-                    ])
-            else:
-                # No features available, write a default row
-                writer.writerow([sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 12 + [1, False, [], [], [], [], question_id, question])
-
-    print(f"\n✅ Done. Saved {len(all_training_samples)} samples to:")
-    print(f"  📄 JSON: {output_json_path}")
-    print(f"  📊 CSV:  {output_csv_path}")
+    # Save to JSON and CSV files
+    write_to_json_csv(all_training_samples, output_json_path, output_csv_path, include_question_metadata=True)
+    
     print(f"  📈 Samples per question: {len(all_training_samples) / len(df):.1f} avg")
     
     return all_training_samples
