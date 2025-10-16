@@ -37,7 +37,7 @@ if __name__ == '__main__':
     ########################################################
     USE_PARALLEL = True  # Set to False for sequential mode
     NUM_GPUS = 2  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = 10  # Number of questions to process
+    NUM_QUESTIONS = 400  # Number of questions to process
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -117,10 +117,10 @@ if __name__ == '__main__':
     ########################################################
     # Create dataset of questions answered correctly
     ########################################################
-    # Load gsm8k
-    # df = load_gsm8k(10)
+    # # Load gsm8k
+    # df = load_gsm8k(1000)
 
-    # Run batch inference
+    # # Run batch inference
     # df = run_inference_batch(
     #     model=model,
     #     tokenizer=tokenizer,
@@ -128,8 +128,8 @@ if __name__ == '__main__':
     #     model_args=model_args,
     #     input_csv_path="./data/gsm8k.csv",
     #     output_csv_path="./data/gsm8k_output.csv",
-    #     steps=128,
-    #     gen_length=128,
+    #     steps=32,
+    #     gen_length=32,
     #     block_length=1,
     #     instruction=instruction
     # )

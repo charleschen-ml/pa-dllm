@@ -1690,6 +1690,9 @@ def augment_multiple_samples_parallel(
     """
     import pandas as pd
     import torch.multiprocessing as mp
+    import time
+    
+    start_time = time.time()
     
     # Set start method for multiprocessing (needed for CUDA)
     try:
@@ -1735,13 +1738,18 @@ def augment_multiple_samples_parallel(
     for _ in range(len(processes)):
         gpu_id, worker_samples = result_queue.get()
         all_training_samples.extend(worker_samples)
+        print(f"✅ GPU {gpu_id} complete: {len(worker_samples)} samples")
     
     # Wait for all processes to complete
     for p in processes:
         p.join()
     
+    end_time = time.time()
+    total_elapsed = end_time - start_time
+    
     print(f"\n{'='*60}")
     print(f"All workers complete! Total samples: {len(all_training_samples)}")
+    print(f"Total time: {total_elapsed:.1f}s ({total_elapsed/60:.1f} min)")
     print(f"{'='*60}")
     
     # Save to JSON and CSV files
