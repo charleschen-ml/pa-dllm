@@ -100,8 +100,8 @@ def main(use_wandb=True):
     # ========================================
     HYPERPARAMS = {
         # Tree structure
-        'n_estimators': 300,      # Number of trees (more = better fit, slower). Try: 50, 100, 200, 500
-        'max_depth': 9,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
+        'n_estimators': 3000,      # Number of trees (more = better fit, slower). Try: 50, 100, 200, 500
+        'max_depth': 6,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
         
         # Learning
         'learning_rate': 0.05,    # Learning rate (lower = slower, more careful). Try: 0.01, 0.05, 0.1, 0.3
@@ -109,14 +109,14 @@ def main(use_wandb=True):
         # Regularization (prevents overfitting) - uncomment to use
         'subsample': 0.8,         # Fraction of samples per tree
         'colsample_bytree': 0.8,  # Fraction of features per tree
-        'min_child_weight': 1,    # Minimum samples in leaf (higher = smoother)
+        'min_child_weight': 5,    # Minimum samples in leaf (higher = smoother)
         # 'gamma': 0,               # Minimum loss reduction to split
-        # 'reg_alpha': 0,           # L1 regularization
+        'reg_alpha': 0.5,           # L1 regularization
         'reg_lambda': 2,          # L2 regularization
         
         # Fixed parameters
         'random_state': 42,
-        'objective': 'multi:softmax',
+        'objective': 'multi:softprob',  # Output probabilities for smoother early stopping
         'num_class': 6,
         'eval_metric': 'mlogloss'
     }
@@ -124,7 +124,9 @@ def main(use_wandb=True):
     # Data configuration
     DATA_PATH = "./data/sft_training_samples_multi_greedy_parallel.csv"
     MODEL_PATH = "./cache/block_size_scheduler.json"
-    TEST_SIZE = 0.2  # 80/20 train/test split
+    TEST_SIZE = 0.15   # 15% for final test (completely unseen)
+    VAL_SIZE = 0.15    # 15% for validation (used for early stopping)
+                       # 70% for training
     
     # ========================================
     # Initialize wandb
@@ -151,9 +153,17 @@ def main(use_wandb=True):
     df = pd.read_csv(DATA_PATH)
     print(f"✅ Loaded {len(df)} samples")
     
-    # Feature columns (19 features)
+    # Filter out samples where answer was already found
+    if 'answer_found' in df.columns:
+        before_count = len(df)
+        df = df[df['answer_found'] == False].reset_index(drop=True)
+        after_count = len(df)
+        print(f"🔍 Filtered out {before_count - after_count} samples where answer_found==True")
+        print(f"   Remaining: {after_count} samples (before answer found)")
+    
+    # Feature columns (17 features - removed 'confidence' and 'entropy' as they're redundant with 'conf_0' and 'entropy_0')
     feature_cols = [
-        'confidence', 'entropy', 'position_relative',
+        'position_relative',
         'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin',
         'mean_confidence', 'mean_entropy', 'shannon_mean_entropy',
         'conf_std', 'entropy_std', 'shannon_entropy_std', 'conf_1',
@@ -183,44 +193,96 @@ def main(use_wandb=True):
         pct = 100 * count / len(y)
         print(f"  Class {class_idx} ({class_labels[class_idx]:>4}): {count:5d} samples ({pct:5.1f}%)")
     
-    # Train/test split (stratified to maintain class balance)
-    print(f"\n🔀 Splitting data ({int((1-TEST_SIZE)*100)}% train, {int(TEST_SIZE*100)}% test)...")
-    try:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=TEST_SIZE, random_state=42, stratify=y
+    # Train/val/test split by question_id to prevent leakage
+    train_pct = int((1 - TEST_SIZE - VAL_SIZE) * 100)
+    val_pct = int(VAL_SIZE * 100)
+    test_pct = int(TEST_SIZE * 100)
+    print(f"\n🔀 Splitting data by question_id ({train_pct}% train, {val_pct}% val, {test_pct}% test)...")
+    
+    if 'question_id' in df.columns:
+        # Split by question_id (all samples from same question go to same split)
+        unique_questions = df['question_id'].unique()
+        
+        # First split: separate test set (completely unseen)
+        train_val_questions, test_questions = train_test_split(
+            unique_questions, test_size=TEST_SIZE, random_state=42
         )
-    except ValueError:
-        # If stratification fails (too few samples in some classes), don't stratify
-        print("⚠️  Stratification failed, using random split...")
-        X_train, X_test, y_train, y_test = train_test_split(
+        
+        # Second split: split remaining into train and val
+        # val_size_adjusted = VAL_SIZE / (1 - TEST_SIZE) to get correct proportion
+        val_size_adjusted = VAL_SIZE / (1 - TEST_SIZE)
+        train_questions, val_questions = train_test_split(
+            train_val_questions, test_size=val_size_adjusted, random_state=42
+        )
+        
+        # Filter dataframe by question_id
+        train_mask = df['question_id'].isin(train_questions)
+        val_mask = df['question_id'].isin(val_questions)
+        test_mask = df['question_id'].isin(test_questions)
+        
+        X_train = X[train_mask]
+        X_val = X[val_mask]
+        X_test = X[test_mask]
+        y_train = y[train_mask]
+        y_val = y[val_mask]
+        y_test = y[test_mask]
+        
+        print(f"  Train: {len(train_questions)} questions → {len(X_train)} samples")
+        print(f"  Val:   {len(val_questions)} questions → {len(X_val)} samples (for early stopping)")
+        print(f"  Test:  {len(test_questions)} questions → {len(X_test)} samples (completely unseen)")
+    else:
+        # Fallback: regular split if question_id not available
+        print("⚠️  question_id not found, using sample-level split (may have leakage!)")
+        # First split out test
+        X_train_val, X_test, y_train_val, y_test = train_test_split(
             X, y, test_size=TEST_SIZE, random_state=42
         )
+        # Then split train_val into train and val
+        val_size_adjusted = VAL_SIZE / (1 - TEST_SIZE)
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train_val, y_train_val, test_size=val_size_adjusted, random_state=42
+        )
+        print(f"  Train: {len(X_train)} samples")
+        print(f"  Val:   {len(X_val)} samples")
+        print(f"  Test:  {len(X_test)} samples")
     
-    print(f"  Train: {len(X_train)} samples")
-    print(f"  Test:  {len(X_test)} samples")
+    # Compute class weights to handle imbalance
+    print("\n⚖️  Computing class weights for imbalanced data...")
+    from sklearn.utils.class_weight import compute_sample_weight
+    
+    # Compute sample weights (inverse frequency weighting)
+    sample_weights = compute_sample_weight('balanced', y_train)
+    
+    # Show weight distribution
+    class_labels = ['1/32', '1/16', '1/8', '1/4', '1/2', '1']
+    for class_idx in range(6):
+        if (y_train == class_idx).sum() > 0:
+            avg_weight = sample_weights[y_train == class_idx].mean()
+            print(f"  Class {class_idx} ({class_labels[class_idx]:>4}): avg weight = {avg_weight:.2f}")
     
     # Train XGBoost Classifier
     print("\n🚀 Training XGBoost classifier...")
     print(f"  Hyperparameters: n_estimators={HYPERPARAMS['n_estimators']}, "
           f"max_depth={HYPERPARAMS['max_depth']}, lr={HYPERPARAMS['learning_rate']}")
     
-    model = xgb.XGBClassifier(**HYPERPARAMS)
+    # Add early stopping to hyperparameters
+    model_params = HYPERPARAMS.copy()
+    model_params['early_stopping_rounds'] = 200  # Stop if no improvement for 50 rounds
     
-    # Train model
-    # Note: For per-round logging to wandb, we'd need to use native xgb.train() API
-    # For simplicity, we'll just train and log final metrics
+    model = xgb.XGBClassifier(**model_params)
+    
+    # Train model with early stopping and sample weights
+    # Use validation set for early stopping (NOT test set to prevent leakage)
     model.fit(
         X_train, y_train,
-        eval_set=[(X_train, y_train), (X_test, y_test)],
+        sample_weight=sample_weights,  # Apply class weights
+        eval_set=[(X_val, y_val)],  # Monitor validation set for early stopping
         verbose=False
     )
     
-    # If you want to see training progress with early stopping, uncomment:
-    # model.fit(
-    #     X_train, y_train,
-    #     eval_set=[(X_test, y_test)],
-    #     verbose=True  # Shows progress per boosting round
-    # )
+    # Get the best iteration (before overfitting started)
+    best_iteration = model.best_iteration if hasattr(model, 'best_iteration') else HYPERPARAMS['n_estimators']
+    print(f"  Best iteration: {best_iteration} (out of {HYPERPARAMS['n_estimators']} max)")
     
     print("✅ Training complete!")
     
@@ -228,22 +290,34 @@ def main(use_wandb=True):
     print("\n📈 EVALUATION RESULTS")
     print("=" * 80)
     
-    y_train_pred = model.predict(X_train)
-    y_test_pred = model.predict(X_test)
+    # Get predictions (softprob returns probabilities, take argmax for class labels)
+    y_train_pred_proba = model.predict_proba(X_train)
+    y_val_pred_proba = model.predict_proba(X_val)
+    y_test_pred_proba = model.predict_proba(X_test)
+    
+    y_train_pred = np.argmax(y_train_pred_proba, axis=1)
+    y_val_pred = np.argmax(y_val_pred_proba, axis=1)
+    y_test_pred = np.argmax(y_test_pred_proba, axis=1)
     
     train_acc = accuracy_score(y_train, y_train_pred)
+    val_acc = accuracy_score(y_val, y_val_pred)
     test_acc = accuracy_score(y_test, y_test_pred)
     
     print(f"Train Accuracy: {train_acc:.3f} ({100*train_acc:.1f}%)")
-    print(f"Test Accuracy:  {test_acc:.3f} ({100*test_acc:.1f}%)")
+    print(f"Val Accuracy:   {val_acc:.3f} ({100*val_acc:.1f}%)  ← Used for early stopping")
+    print(f"Test Accuracy:  {test_acc:.3f} ({100*test_acc:.1f}%)  ← Final unseen evaluation")
+    print(f"Overfitting gap (train-val): {train_acc - val_acc:.3f}")
     
     # Log to wandb
     if use_wandb:
         wandb.log({
             "train_accuracy": train_acc,
+            "val_accuracy": val_acc,
             "test_accuracy": test_acc,
-            "overfitting_gap": train_acc - test_acc,
+            "overfitting_gap_train_val": train_acc - val_acc,
+            "overfitting_gap_train_test": train_acc - test_acc,
             "num_train_samples": len(X_train),
+            "num_val_samples": len(X_val),
             "num_test_samples": len(X_test)
         })
     
@@ -298,24 +372,29 @@ def main(use_wandb=True):
     for i in range(min(5, len(X_test))):
         features = X_test.iloc[i:i+1]
         true_class = y_test.iloc[i]
-        pred_class = model.predict(features)[0]
+        pred_proba = model.predict_proba(features)[0]  # Returns probabilities
+        pred_class = np.argmax(pred_proba)  # Get class with highest probability
         
         true_rel = class_to_rel(true_class)
         pred_rel = class_to_rel(pred_class)
         
         match = "✅" if true_class == pred_class else "❌"
+        pred_confidence = pred_proba[pred_class]  # Confidence in predicted class
         
         print(f"{match} Sample {i+1}:")
         print(f"   True: class {true_class} ({class_labels[true_class]}) = {true_rel:.4f}")
-        print(f"   Pred: class {pred_class} ({class_labels[pred_class]}) = {pred_rel:.4f}")
-        print(f"   Features: conf={features['confidence'].values[0]:.3f}, "
-              f"entropy={features['entropy'].values[0]:.3f}, "
+        print(f"   Pred: class {pred_class} ({class_labels[pred_class]}) = {pred_rel:.4f} (confidence: {pred_confidence:.2%})")
+        print(f"   Features: conf_0={features['conf_0'].values[0]:.3f}, "
+              f"entropy_0={features['entropy_0'].values[0]:.3f}, "
               f"pos_rel={features['position_relative'].values[0]:.3f}")
         print()
     
     print("=" * 80)
     print("✅ TRAINING COMPLETE!")
-    print(f"📈 Test Accuracy: {test_acc:.1%} (Train: {train_acc:.1%}, Gap: {train_acc-test_acc:.1%})")
+    print(f"📈 Train Accuracy: {train_acc:.1%}")
+    print(f"📈 Val Accuracy:   {val_acc:.1%} (used for early stopping)")
+    print(f"📈 Test Accuracy:  {test_acc:.1%} (final unseen evaluation)")
+    print(f"   Overfitting gap (train-val): {train_acc-val_acc:+.1%}")
     print(f"📦 Model saved to: {MODEL_PATH}")
     print(f"📊 Plots saved to: ./output/")
     print("=" * 80)
