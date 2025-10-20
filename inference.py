@@ -64,7 +64,19 @@ class InferenceArguments:
         self.inf_bit_config = inf_bit_config
         self.default_bit = default_bit
 
-def load_gsm8k(n=100):
+def load_gsm8k(start=0, end=None):
+    """
+    Load GSM8K dataset with flexible indexing.
+    
+    Args:
+        start: Starting index (inclusive, default: 0)
+        end: Ending index (exclusive, default: None = load all)
+    
+    Usage:
+        load_gsm8k(start=0, end=100)    # Questions 0-99
+        load_gsm8k(start=100, end=200)  # Questions 100-199
+        load_gsm8k(start=500)           # Questions 500 to end
+    """
     from datasets import load_dataset
     import pandas as pd
     import re
@@ -72,8 +84,14 @@ def load_gsm8k(n=100):
     # Load GSM8K dataset (train split)
     ds = load_dataset("openai/gsm8k", "main", split="train")
 
-    # Select the first n examples
-    ds_small = ds.select(range(min(n, len(ds))))
+    # Determine the range to select
+    if end is not None:
+        indices = range(start, min(end, len(ds)))
+    else:
+        indices = range(start, len(ds))
+    
+    # Select the examples
+    ds_small = ds.select(indices)
 
     # Convert to pandas DataFrame
     df = pd.DataFrame(ds_small)

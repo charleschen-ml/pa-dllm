@@ -35,9 +35,9 @@ if __name__ == '__main__':
     ########################################################
     # CONFIGURATION: Choose mode
     ########################################################
-    USE_PARALLEL = True  # Set to False for sequential mode
-    NUM_GPUS = 2  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = 400  # Number of questions to process
+    USE_PARALLEL = True  # Set to False for sequential mode (needed for batch inference)
+    NUM_GPUS = 4  # Only used if USE_PARALLEL=True
+    NUM_QUESTIONS = None  # Number of questions to process (None = process all questions in CSV)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -117,27 +117,27 @@ if __name__ == '__main__':
     ########################################################
     # Create dataset of questions answered correctly
     ########################################################
-    # # Load gsm8k
-    # df = load_gsm8k(1000)
+    # Load gsm8k
+    df = load_gsm8k(start=2000, end=3000)
 
-    # # Run batch inference
-    # df = run_inference_batch(
-    #     model=model,
-    #     tokenizer=tokenizer,
-    #     device=device,
-    #     model_args=model_args,
-    #     input_csv_path="./data/gsm8k.csv",
-    #     output_csv_path="./data/gsm8k_output.csv",
-    #     steps=32,
-    #     gen_length=32,
-    #     block_length=1,
-    #     instruction=instruction
-    # )
-    # # Load df from csv
-    # df = pd.read_csv("./data/gsm8k_output.csv")
-    # # Calculate score
-    # correct_path = "./data/gsm8k_correct.csv"
-    # calculate_score(df, correct_path)
+    # Run batch inference
+    df = run_inference_batch(
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        model_args=model_args,
+        input_csv_path="./data/gsm8k.csv",
+        output_csv_path="./data/gsm8k_output.csv",
+        steps=32,
+        gen_length=32,
+        block_length=1,
+        instruction=instruction
+    )
+    # Load df from csv
+    df = pd.read_csv("./data/gsm8k_output.csv")
+    # Calculate score
+    correct_path = "./data/gsm8k_correct.csv"
+    calculate_score(df, correct_path)
 
     ########################################################
     # Load single prompt (only for sequential mode)
@@ -230,14 +230,24 @@ if __name__ == '__main__':
     ########################################################
     start_time = time.time()
     
+    # Determine how many questions to process
+    csv_path = "./data/gsm8k_correct.csv"
+    df_temp = pd.read_csv(csv_path)
+    total_questions = len(df_temp)
+    print(f"📊 Found {total_questions} questions in {csv_path}")
+    
+    # Use NUM_QUESTIONS if specified, otherwise process all
+    questions_to_process = NUM_QUESTIONS if NUM_QUESTIONS is not None else total_questions
+    print(f"🎯 Processing {questions_to_process} questions")
+    
     if USE_PARALLEL:
         print(f"🚀 Starting PARALLEL mode with {NUM_GPUS} GPUs...")
         from inference import augment_multiple_samples_parallel
         
         all_training_samples = augment_multiple_samples_parallel(
             model_args=model_args,
-            csv_path="./data/gsm8k_correct.csv",
-            num_questions=NUM_QUESTIONS,
+            csv_path=csv_path,
+            num_questions=questions_to_process,
             gen_length=32,
             base_block_length=1,
             steps=32,
@@ -254,8 +264,8 @@ if __name__ == '__main__':
             tokenizer=tokenizer,
             device=device,
             model_args=model_args,
-            csv_path="./data/gsm8k_correct.csv",
-            num_questions=NUM_QUESTIONS,
+            csv_path=csv_path,
+            num_questions=questions_to_process,
             gen_length=32,
             base_block_length=1,
             steps=32,
