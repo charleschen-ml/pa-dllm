@@ -109,15 +109,15 @@ def main(use_wandb=True):
         'max_depth': 6,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
         
         # Learning
-        'learning_rate': 0.05,    # Learning rate (lower = slower, more careful). Try: 0.01, 0.05, 0.1, 0.3
+        'learning_rate': 0.01,    # Learning rate (lower = slower, more careful). Try: 0.01, 0.05, 0.1, 0.3
         
         # Regularization (prevents overfitting) - uncomment to use
-        'subsample': 0.8,         # Fraction of samples per tree
-        'colsample_bytree': 0.8,  # Fraction of features per tree
-        'min_child_weight': 5,    # Minimum samples in leaf (higher = smoother)
-        'gamma': 1,               # Minimum loss reduction to split
-        'reg_alpha': 0.5,           # L1 regularization
-        'reg_lambda': 2,          # L2 regularization
+        # 'subsample': 0.8,         # Fraction of samples per tree
+        # 'colsample_bytree': 0.8,  # Fraction of features per tree
+        # 'min_child_weight': 5,    # Minimum samples in leaf (higher = smoother)
+        # 'gamma': 1,               # Minimum loss reduction to split
+        # 'reg_alpha': 0.5,           # L1 regularization
+        # 'reg_lambda': 2,          # L2 regularization
         
         # Fixed parameters
         'random_state': 42,
@@ -174,12 +174,12 @@ def main(use_wandb=True):
         print(f"🔍 Filtered out {before_count - after_count} samples where answer_found==True")
         print(f"   Remaining: {after_count} samples (before answer found)")
     
-    # Feature columns (17 features - removed 'confidence' and 'entropy' as they're redundant with 'conf_0' and 'entropy_0')
+    # Feature columns (14 features - removed entropy-based features)
     feature_cols = [
         'position_relative',
-        'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin',
-        'mean_confidence', 'mean_entropy', 'shannon_mean_entropy',
-        'conf_std', 'entropy_std', 'shannon_entropy_std', 'conf_1',
+        'conf_0', 'shannon_entropy_0', 'top1_margin',
+        'mean_confidence', 'shannon_mean_entropy',
+        'conf_std', 'shannon_entropy_std', 'conf_1',
         'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
     ]
     
@@ -492,7 +492,7 @@ def main(use_wandb=True):
             print(f"   Pred: class {pred_class} ({class_labels[pred_class]}) = {pred_rel:.4f} (confidence: {pred_confidence:.2%})")
         
         print(f"   Features: conf_0={features['conf_0'].values[0]:.3f}, "
-              f"entropy_0={features['entropy_0'].values[0]:.3f}, "
+              f"shannon_entropy_0={features['shannon_entropy_0'].values[0]:.3f}, "
               f"pos_rel={features['position_relative'].values[0]:.3f}")
         print()
     

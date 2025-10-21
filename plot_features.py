@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Plot each feature vs block_size (label) for analysis
+Plot label histogram and feature correlations for analysis
+
+This script generates:
+1. Label distribution histogram (block_size)
+2. Feature vs label scatter plots with correlations
+3. Feature correlation summary and heatmap
 """
 
 import pandas as pd
@@ -8,20 +13,110 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-def plot_features_vs_labels():
+def plot_label_histogram(csv_path):
+    """Plot histogram of labels (block_size) and save to output directory"""
+    
+    # Create output directory if it doesn't exist
+    os.makedirs('./output', exist_ok=True)
+    
+    if not os.path.exists(csv_path):
+        print(f"❌ Data file not found: {csv_path}")
+        return
+    
+    print(f"\n{'='*80}")
+    print(f"📊 PLOTTING LABEL HISTOGRAM")
+    print(f"{'='*80}")
+    print(f"📊 Loading data from: {csv_path}")
+    df = pd.read_csv(csv_path)
+    
+    print(f"✅ Loaded {len(df)} samples")
+    
+    # Filter by answer_found=False
+    df = df[df['answer_found'] == False]
+    print(f"🔍 Filtered to {len(df)} samples where answer_found=False")
+    
+    # Get the labels (block_size)
+    labels = df['block_size']
+    
+    # Calculate statistics
+    mean_val = labels.mean()
+    median_val = labels.median()
+    std_val = labels.std()
+    min_val = labels.min()
+    max_val = labels.max()
+    
+    # Print detailed statistics
+    print(f"\n📊 Label Distribution Statistics:")
+    print(f"Mean: {mean_val:.4f}")
+    print(f"Median: {median_val:.4f}")
+    print(f"Standard Deviation: {std_val:.4f}")
+    print(f"Minimum: {min_val}")
+    print(f"Maximum: {max_val}")
+    print(f"Total Samples: {len(labels)}")
+    
+    # Print value counts
+    print(f"\n🔢 Value Counts:")
+    value_counts = labels.value_counts().sort_index()
+    for value, count in value_counts.items():
+        percentage = (count / len(labels)) * 100
+        print(f"Block Size {value}: {count} samples ({percentage:.1f}%)")
+    
+    # Create a bar plot for value counts as well
+    plt.figure(figsize=(12, 8))
+    
+    # Bar plot of value counts
+    bars = plt.bar(value_counts.index, value_counts.values, alpha=0.7, color='lightcoral', edgecolor='black')
+    
+    # Add percentage labels on bars
+    for bar, count in zip(bars, value_counts.values):
+        height = bar.get_height()
+        percentage = (count / len(labels)) * 100
+        plt.text(bar.get_x() + bar.get_width()/2., height + 0.01*max(value_counts.values),
+                f'{count}\n({percentage:.1f}%)', ha='center', va='bottom', fontsize=10)
+    
+    plt.xlabel('Block Size (Label)', fontsize=12)
+    plt.ylabel('Count', fontsize=12)
+    plt.title(f'Distribution of Labels (Block Size)\nTotal Samples: {len(labels)}', fontsize=14)
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # Set x-axis to show only integer ticks
+    plt.xticks(value_counts.index)
+    
+    # Add statistics text box to bar plot
+    stats_text = f'''Statistics:
+Mean: {mean_val:.2f}
+Median: {median_val:.2f}
+Std Dev: {std_val:.2f}
+Min: {min_val}
+Max: {max_val}
+Total Samples: {len(labels)}'''
+    
+    plt.text(0.7, 0.95, stats_text, transform=plt.gca().transAxes, 
+             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+             fontsize=10)
+    
+    # Save bar plot
+    bar_output_path = './output/label_distribution_bars.png'
+    plt.savefig(bar_output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"✅ Saved bar plot: {bar_output_path}")
+    print(f"🎯 Done! Generated bar plot of labels\n")
+
+
+def plot_features_vs_labels(csv_path):
     """Plot each feature against block_size and save to output directory"""
     
     # Create output directory if it doesn't exist
     os.makedirs('./output', exist_ok=True)
     
-    # Load the training data
-    # csv_path = './data/sft_training_samples_greedy.csv' # single augmentation
-    # csv_path = './data/sft_training_samples_multi_greedy.csv' # multi augmentation
-    csv_path = './data/sft_training_samples_multi_greedy_parallel.csv' # multi augmentation parallel
     if not os.path.exists(csv_path):
         print(f"❌ Data file not found: {csv_path}")
         return
     
+    print(f"\n{'='*80}")
+    print(f"📈 PLOTTING FEATURE CORRELATIONS")
+    print(f"{'='*80}")
     print(f"📊 Loading data from: {csv_path}")
     df = pd.read_csv(csv_path)
 
@@ -34,10 +129,10 @@ def plot_features_vs_labels():
     print(f"Columns: {list(df.columns)}")
     
     # Define the features to plot (excluding non-numeric and identifier columns)
-    # Removed redundant features: entropy (use entropy_0), confidence (use conf_0), position (use position_relative)
+    # Removed entropy-based features (keeping only shannon entropy variants)
     feature_columns = [
-        'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
-        'shannon_mean_entropy', 'conf_std', 'entropy_std', 'shannon_entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
+        'position_relative', 'conf_0', 'shannon_entropy_0', 'top1_margin', 'mean_confidence',
+        'shannon_mean_entropy', 'conf_std', 'shannon_entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
         'top8_conf_min', 'next8_conf_min'
     ]
     
@@ -157,7 +252,29 @@ def plot_features_vs_labels():
     plt.close()
     
     print(f"✅ Saved correlation plot: {correlation_plot_path}")
-    print(f"\n🎯 Done! Generated {len(available_features)} feature plots + summary")
+    print(f"🎯 Done! Generated {len(available_features)} feature plots + summary\n")
+
 
 if __name__ == "__main__":
-    plot_features_vs_labels()
+    # ========================================
+    # CONFIGURATION
+    # ========================================
+    # Choose which data file to analyze
+    # csv_path = './data/sft_training_samples_greedy.csv' # single augmentation
+    # csv_path = './data/sft_training_samples_multi_greedy.csv' # multi augmentation
+    csv_path = './data/sft_training_samples_multi_greedy_parallel.csv' # multi augmentation parallel
+    
+    print("="*80)
+    print("🎨 FEATURE & LABEL VISUALIZATION")
+    print("="*80)
+    print(f"Data file: {csv_path}\n")
+    
+    # Plot label histogram
+    plot_label_histogram(csv_path)
+    
+    # Plot feature correlations
+    plot_features_vs_labels(csv_path)
+    
+    print("="*80)
+    print("✅ ALL PLOTS COMPLETE!")
+    print("="*80)
