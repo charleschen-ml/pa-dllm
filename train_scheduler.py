@@ -105,15 +105,15 @@ def main(use_wandb=True):
     # ========================================
     HYPERPARAMS = {
         # Tree structure
-        'n_estimators': 3000,      # Number of trees (more = better fit, slower). Try: 50, 100, 200, 500
-        'max_depth': 6,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
+        'n_estimators': 1000,      # Number of trees (more = better fit, slower). Try: 50, 100, 200, 500
+        'max_depth': 3,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
         
         # Learning
-        'learning_rate': 0.01,    # Learning rate (lower = slower, more careful). Try: 0.01, 0.05, 0.1, 0.3
+        'learning_rate': 0.05,    # Learning rate (lower = slower, more careful). Try: 0.01, 0.05, 0.1, 0.3
         
         # Regularization (prevents overfitting) - uncomment to use
-        # 'subsample': 0.8,         # Fraction of samples per tree
-        # 'colsample_bytree': 0.8,  # Fraction of features per tree
+        'subsample': 0.8,         # Fraction of samples per tree
+        'colsample_bytree': 0.8,  # Fraction of features per tree
         # 'min_child_weight': 5,    # Minimum samples in leaf (higher = smoother)
         # 'gamma': 1,               # Minimum loss reduction to split
         # 'reg_alpha': 0.5,           # L1 regularization
@@ -182,6 +182,26 @@ def main(use_wandb=True):
         'conf_std', 'shannon_entropy_std', 'conf_1',
         'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
     ]
+    
+    # Monotonic constraints for XGBoost
+    # +1 = positive monotonicity (higher feature → higher block_size)
+    # -1 = negative monotonicity (higher feature → lower block_size)
+    #  0 = no constraint (let model learn freely)
+    monotonic_constraints = {
+        'position_relative': 1,      # Later positions → larger blocks
+        'conf_0': 1,                 # Higher confidence → larger blocks
+        'shannon_entropy_0': -1,     # Higher entropy → smaller blocks
+        'top1_margin': 1,            # Larger margin → larger blocks
+        'mean_confidence': 1,        # Higher mean conf → larger blocks
+        'shannon_mean_entropy': -1,  # Higher mean entropy → smaller blocks
+        'conf_std': 0,               # Let model learn freely
+        'shannon_entropy_std': 0,    # Let model learn freely
+        'conf_1': 1,                 # Higher conf_1 → larger blocks
+        'top4_conf_min': 1,          # Higher min conf → larger blocks
+        'next4_conf_min': 1,         # Higher min conf → larger blocks
+        'top8_conf_min': 1,          # Higher min conf → larger blocks
+        'next8_conf_min': 1          # Higher min conf → larger blocks
+    }
     
     # Check for missing features
     missing_cols = [col for col in feature_cols if col not in df.columns]
@@ -307,9 +327,21 @@ def main(use_wandb=True):
     print(f"  Hyperparameters: n_estimators={HYPERPARAMS['n_estimators']}, "
           f"max_depth={HYPERPARAMS['max_depth']}, lr={HYPERPARAMS['learning_rate']}")
     
-    # Add early stopping to hyperparameters
+    # Add early stopping and monotonic constraints to hyperparameters
     model_params = HYPERPARAMS.copy()
     model_params['early_stopping_rounds'] = 200  # Stop if no improvement for 200 rounds
+    
+    # Convert monotonic constraints dict to tuple in feature order
+    # XGBoost requires a tuple where position i corresponds to feature i
+    monotone_constraints_tuple = tuple(monotonic_constraints[feat] for feat in feature_cols)
+    model_params['monotone_constraints'] = monotone_constraints_tuple
+    
+    print(f"\n🔒 Monotonic constraints applied:")
+    for feat in feature_cols:
+        constraint = monotonic_constraints[feat]
+        symbol = "↑" if constraint == 1 else "↓" if constraint == -1 else "○"
+        constraint_str = "positive" if constraint == 1 else "negative" if constraint == -1 else "none"
+        print(f"  {symbol} {feat}: {constraint_str}")
     
     if USE_REGRESSION:
         model = xgb.XGBRegressor(**model_params)
