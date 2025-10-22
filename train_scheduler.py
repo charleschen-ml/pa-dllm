@@ -174,12 +174,17 @@ def main(use_wandb=True):
         print(f"🔍 Filtered out {before_count - after_count} samples where answer_found==True")
         print(f"   Remaining: {after_count} samples (before answer found)")
     
-    # Feature columns (14 features - removed entropy-based features)
+    # Feature columns (30 features - all confidence and entropy variants + aggregates)
     feature_cols = [
         'position_relative',
-        'conf_0', 'shannon_entropy_0', 'top1_margin',
-        'mean_confidence', 'shannon_mean_entropy',
-        'conf_std', 'shannon_entropy_std', 'conf_1',
+        # Confidence features (positions 0-9)
+        'conf_0', 'conf_1', 'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
+        # Shannon entropy features (positions 0-9)
+        'shannon_entropy_0', 'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
+        'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9',
+        # Aggregate features
+        'top1_margin', 'mean_confidence', 'shannon_mean_entropy',
+        'conf_std', 'shannon_entropy_std',
         'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
     ]
     
@@ -188,19 +193,24 @@ def main(use_wandb=True):
     # -1 = negative monotonicity (higher feature → lower block_size)
     #  0 = no constraint (let model learn freely)
     monotonic_constraints = {
-        'position_relative': 1,      # Later positions → larger blocks
-        'conf_0': 1,                 # Higher confidence → larger blocks
-        'shannon_entropy_0': -1,     # Higher entropy → smaller blocks
-        'top1_margin': 1,            # Larger margin → larger blocks
-        'mean_confidence': 1,        # Higher mean conf → larger blocks
-        'shannon_mean_entropy': -1,  # Higher mean entropy → smaller blocks
-        'conf_std': 0,               # Let model learn freely
-        'shannon_entropy_std': 0,    # Let model learn freely
-        'conf_1': 1,                 # Higher conf_1 → larger blocks
-        'top4_conf_min': 1,          # Higher min conf → larger blocks
-        'next4_conf_min': 1,         # Higher min conf → larger blocks
-        'top8_conf_min': 1,          # Higher min conf → larger blocks
-        'next8_conf_min': 1          # Higher min conf → larger blocks
+        'position_relative': 1,           # Later positions → larger blocks
+        # Confidence features: higher confidence → larger blocks (+1)
+        'conf_0': 1, 'conf_1': 1, 'conf_2': 1, 'conf_3': 1, 'conf_4': 1,
+        'conf_5': 1, 'conf_6': 1, 'conf_7': 1, 'conf_8': 1, 'conf_9': 1,
+        # Shannon entropy features: higher entropy → smaller blocks (-1)
+        'shannon_entropy_0': -1, 'shannon_entropy_1': -1, 'shannon_entropy_2': -1, 'shannon_entropy_3': -1,
+        'shannon_entropy_4': -1, 'shannon_entropy_5': -1, 'shannon_entropy_6': -1, 'shannon_entropy_7': -1,
+        'shannon_entropy_8': -1, 'shannon_entropy_9': -1,
+        # Aggregate features
+        'top1_margin': 1,                # Larger margin → larger blocks
+        'mean_confidence': 1,            # Higher mean conf → larger blocks
+        'shannon_mean_entropy': -1,      # Higher mean entropy → smaller blocks
+        'conf_std': 0,                   # Let model learn freely (stddev of confidence)
+        'shannon_entropy_std': 0,        # Let model learn freely (stddev of entropy)
+        'top4_conf_min': 1,              # Higher min conf → larger blocks
+        'next4_conf_min': 1,             # Higher min conf → larger blocks
+        'top8_conf_min': 1,              # Higher min conf → larger blocks
+        'next8_conf_min': 1              # Higher min conf → larger blocks
     }
     
     # Check for missing features
