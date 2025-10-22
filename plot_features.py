@@ -129,16 +129,20 @@ def plot_features_vs_labels(csv_path):
     print(f"Columns: {list(df.columns)}")
     
     # Define the features to plot (excluding non-numeric and identifier columns)
-    # Removed entropy-based features (keeping only shannon entropy variants)
+    # Include ALL conf_* and shannon_entropy_* features plus aggregate features
     feature_columns = [
-        'position_relative', 'conf_0', 'shannon_entropy_0', 'top1_margin', 'mean_confidence',
-        'shannon_mean_entropy', 'conf_std', 'shannon_entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
-        'top8_conf_min', 'next8_conf_min'
+        'position_relative', 
+        'conf_0', 'conf_1', 'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
+        'shannon_entropy_0', 'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
+        'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9',
+        'top1_margin', 'mean_confidence', 'shannon_mean_entropy', 
+        'conf_std', 'shannon_entropy_std',
+        'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
     ]
     
     # Filter to only existing columns
     available_features = [col for col in feature_columns if col in df.columns]
-    print(f"📈 Plotting {len(available_features)} features: {available_features}")
+    print(f"📈 Analyzing {len(available_features)} features: {available_features}")
     
     # Label column
     # label_column = 'block_size'
@@ -148,49 +152,10 @@ def plot_features_vs_labels(csv_path):
         print(f"❌ Label column '{label_column}' not found in data")
         return
     
-    # Plot each feature
-    for i, feature in enumerate(available_features):
-        print(f"Plotting {i+1}/{len(available_features)}: {feature}")
-        
-        # Create figure
-        plt.figure(figsize=(10, 6))
-        
-        # Get data
-        x = df[feature].dropna()
-        y = df.loc[x.index, label_column]
-        
-        # Create scatter plot
-        plt.scatter(x, y, alpha=0.6, s=30)
-        
-        # Add trend line if there are enough points
-        if len(x) > 1:
-            try:
-                z = np.polyfit(x, y, 1)
-                p = np.poly1d(z)
-                x_trend = np.linspace(x.min(), x.max(), 100)
-                plt.plot(x_trend, p(x_trend), "r--", alpha=0.8, linewidth=2, label=f'Trend: y={z[0]:.4f}x+{z[1]:.4f}')
-                plt.legend()
-            except:
-                pass  # Skip trend line if fitting fails
-        
-        # Labels and title
-        plt.xlabel(feature)
-        plt.ylabel(label_column)
-        plt.title(f'{feature} vs {label_column}')
-        plt.grid(True, alpha=0.3)
-        
-        # Add statistics
-        correlation = np.corrcoef(x, y)[0, 1] if len(x) > 1 else 0
-        plt.text(0.05, 0.95, f'Correlation: {correlation:.4f}\nSamples: {len(x)}', 
-                transform=plt.gca().transAxes, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        
-        # Save plot
-        output_path = f'./output/{feature}_vs_{label_column}.png'
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"  ✅ Saved: {output_path}")
+    # Skip individual plots (too many features now - 30 total)
+    # Individual plots disabled to reduce output size
+    print(f"⏭️  Skipping individual correlation plots (too many features)")
+    print(f"   Generating only summary statistics and correlation heatmap...")
     
     # Create summary statistics
     print(f"\n📊 Creating summary statistics...")
@@ -252,7 +217,7 @@ def plot_features_vs_labels(csv_path):
     plt.close()
     
     print(f"✅ Saved correlation plot: {correlation_plot_path}")
-    print(f"🎯 Done! Generated {len(available_features)} feature plots + summary\n")
+    print(f"🎯 Done! Analyzed {len(available_features)} features and generated summary plots\n")
 
 
 if __name__ == "__main__":
