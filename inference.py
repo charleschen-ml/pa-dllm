@@ -1837,7 +1837,12 @@ def load_scheduler(model_path, use_regression=True):
 def extract_features_at_position(model, tokenizer, input_ids, curr_pos, gen_length, 
                                    base_block_length, steps, manual_settings=None):
     """
-    Extract features at a given position by running AR generation up to that point.
+    Extract features at a given position by running semi-AR generation up to that point.
+    
+    Uses previously predicted block_sizes (from manual_settings) to generate up to curr_pos,
+    then extracts features at that position. This ensures features are extracted from the
+    actual trajectory that will be taken during inference (with predicted block sizes),
+    not from a pure AR trajectory.
     
     Args:
         model: The model to use
@@ -1847,20 +1852,22 @@ def extract_features_at_position(model, tokenizer, input_ids, curr_pos, gen_leng
         gen_length: Total generation length
         base_block_length: Base block length
         steps: Number of steps
-        manual_settings: Dict of {position: block_size} for positions already decided
+        manual_settings: Dict of {position: block_size} for positions already decided by XGBoost
     
     Returns:
-        feature_dict: Dictionary with 13 features used by XGBoost scheduler
+        feature_dict: Dictionary with 30 features used by XGBoost scheduler
     """
     if manual_settings is None:
         manual_settings = {}
     
     # Build block_sizes list for generating up to curr_pos
-    # All positions before curr_pos use block_size=1 (AR mode)
+    # Positions before curr_pos use block_sizes from manual_settings (XGBoost predictions)
+    # or default to block_size=1 (AR) if not yet decided. In normal iteration, all
+    # positions 0 to curr_pos-1 should already be in manual_settings.
     for i in range(curr_pos):
         if i not in manual_settings:
             manual_settings[i] = 1
-    
+
     block_sizes = calculate_block_sizes(
         gen_length=gen_length,
         base_block_length=base_block_length,
@@ -1897,17 +1904,37 @@ def extract_features_at_position(model, tokenizer, input_ids, curr_pos, gen_leng
     # Get additional features
     additional_feats = additional_features.get(curr_pos, {}) if additional_features else {}
     
-    # Build feature dictionary (13 features used in training)
+    # Build feature dictionary (30 features used in training)
     feature_dict = {
         'position_relative': position_relative,
+        # Confidence features (positions 0-9)
         'conf_0': additional_feats.get('conf_0', 0.0),
+        'conf_1': additional_feats.get('conf_1', 0.0),
+        'conf_2': additional_feats.get('conf_2', 0.0),
+        'conf_3': additional_feats.get('conf_3', 0.0),
+        'conf_4': additional_feats.get('conf_4', 0.0),
+        'conf_5': additional_feats.get('conf_5', 0.0),
+        'conf_6': additional_feats.get('conf_6', 0.0),
+        'conf_7': additional_feats.get('conf_7', 0.0),
+        'conf_8': additional_feats.get('conf_8', 0.0),
+        'conf_9': additional_feats.get('conf_9', 0.0),
+        # Shannon entropy features (positions 0-9)
         'shannon_entropy_0': additional_feats.get('shannon_entropy_0', 0.0),
+        'shannon_entropy_1': additional_feats.get('shannon_entropy_1', 0.0),
+        'shannon_entropy_2': additional_feats.get('shannon_entropy_2', 0.0),
+        'shannon_entropy_3': additional_feats.get('shannon_entropy_3', 0.0),
+        'shannon_entropy_4': additional_feats.get('shannon_entropy_4', 0.0),
+        'shannon_entropy_5': additional_feats.get('shannon_entropy_5', 0.0),
+        'shannon_entropy_6': additional_feats.get('shannon_entropy_6', 0.0),
+        'shannon_entropy_7': additional_feats.get('shannon_entropy_7', 0.0),
+        'shannon_entropy_8': additional_feats.get('shannon_entropy_8', 0.0),
+        'shannon_entropy_9': additional_feats.get('shannon_entropy_9', 0.0),
+        # Aggregate features
         'top1_margin': additional_feats.get('top1_margin', 0.0),
         'mean_confidence': additional_feats.get('mean_confidence', 0.0),
         'shannon_mean_entropy': additional_feats.get('shannon_mean_entropy', 0.0),
         'conf_std': additional_feats.get('conf_std', 0.0),
         'shannon_entropy_std': additional_feats.get('shannon_entropy_std', 0.0),
-        'conf_1': additional_feats.get('conf_1', 0.0),
         'top4_conf_min': additional_feats.get('top4_conf_min', 0.0),
         'next4_conf_min': additional_feats.get('next4_conf_min', 0.0),
         'top8_conf_min': additional_feats.get('top8_conf_min', 0.0),
@@ -1932,11 +1959,19 @@ def predict_block_size(scheduler, features, gen_length, use_regression=True):
     """
     import numpy as np
     
-    # Feature order must match training
+    # Feature order must match training (train_scheduler.py)
+    # 30 features total
     feature_order = [
-        'position_relative', 'conf_0', 'shannon_entropy_0', 'top1_margin',
-        'mean_confidence', 'shannon_mean_entropy', 'conf_std', 'shannon_entropy_std',
-        'conf_1', 'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
+        'position_relative',
+        # Confidence features (positions 0-9)
+        'conf_0', 'conf_1', 'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
+        # Shannon entropy features (positions 0-9)
+        'shannon_entropy_0', 'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
+        'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9',
+        # Aggregate features
+        'top1_margin', 'mean_confidence', 'shannon_mean_entropy',
+        'conf_std', 'shannon_entropy_std',
+        'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
     ]
     
     # Build feature array
@@ -1968,13 +2003,18 @@ def generate_with_scheduler(model, tokenizer, scheduler, input_ids, gen_length,
     """
     Generate text using XGBoost scheduler to predict block sizes incrementally.
     
-    This function:
-    1. Starts at position 0
-    2. For each block boundary:
-       a. Extract features at current position
-       b. Query XGBoost to predict optimal block_size
-       c. Continue generation with predicted block_size
-    3. Returns final generated tokens
+    GENERATION-FIRST approach:
+    1. For each position:
+       a. Generate next block (using predicted or default block_size)
+       b. Extract features from ALL tokens generated so far
+       c. Query XGBoost to predict optimal block_size for next position
+       d. Move to next position
+    2. Return final generated tokens
+    
+    Benefits:
+    - Each position generated ONCE (efficient)
+    - Features extracted from actual generated tokens (robust)
+    - Handles early stopping gracefully
     
     Args:
         model: The model to use
@@ -1993,80 +2033,182 @@ def generate_with_scheduler(model, tokenizer, scheduler, input_ids, gen_length,
         out: Generated tokens [1, prompt_length + gen_length]
         predicted_block_sizes: List of block sizes predicted by scheduler
     """
-    print(f"\n🤖 Starting scheduler-guided generation (gen_length={gen_length})")
+    import torch
+    import numpy as np
+    
+    print(f"\n🤖 Starting scheduler-guided INCREMENTAL generation (gen_length={gen_length})")
     
     predicted_block_sizes = []
-    manual_settings = {}
-    
     curr_pos = 0
+    
+    # Current input for generation (starts with prompt, grows as we generate)
+    current_input = input_ids.clone()
+    prompt_length = input_ids.shape[1]
     
     while curr_pos < gen_length:
         print(f"\n--- Position {curr_pos}/{gen_length} ---")
         
-        # Extract features at current position
-        features = extract_features_at_position(
-            model=model,
-            tokenizer=tokenizer,
-            input_ids=input_ids,
-            curr_pos=curr_pos,
-            gen_length=gen_length,
-            base_block_length=base_block_length,
-            steps=steps,
-            manual_settings=manual_settings.copy()
-        )
-        
-        if features is None:
-            print(f"⚠️  Could not extract features at position {curr_pos}, using default block_size=1")
-            block_size = 1
+        # Step 1: Predict block size for this position using features from ALL tokens so far
+        if curr_pos == 0:
+            # At position 0, use default block size
+            block_size = base_block_length
+            print(f"🎯 Position 0: Using default block_size={block_size}")
         else:
-            # Predict block size using scheduler
-            block_size = predict_block_size(
-                scheduler=scheduler,
-                features=features,
+            # Extract features from tokens generated so far
+            # This uses actual tokens, not re-generated
+            features = extract_features_for_scheduler(
+                confidence_list=confidence_list,
+                entropy_list=entropy_list,
+                position=curr_pos,
                 gen_length=gen_length,
-                use_regression=use_regression
+                additional_features_dict=additional_features_dict
             )
             
-            print(f"🎯 Predicted block_size: {block_size}")
-            print(f"   Key features: conf_0={features['conf_0']:.3f}, "
-                  f"shannon_entropy_0={features['shannon_entropy_0']:.3f}, "
-                  f"position_relative={features['position_relative']:.3f}")
+            if features is None:
+                print(f"⚠️  Could not extract features at position {curr_pos}, using default block_size=1")
+                block_size = 1
+            else:
+                # Predict block size using scheduler
+                block_size = predict_block_size(
+                    scheduler=scheduler,
+                    features=features,
+                    gen_length=gen_length,
+                    use_regression=use_regression
+                )
+                
+                print(f"🎯 Predicted block_size: {block_size}")
+                print(f"   Key features: conf_0={features['conf_0']:.3f}, "
+                      f"shannon_entropy_0={features['shannon_entropy_0']:.3f}, "
+                      f"position_relative={features['position_relative']:.3f}")
         
-        # Store predicted block size
-        predicted_block_sizes.append(block_size)
+        # Step 2: Generate next block
+        remaining_tokens = gen_length - curr_pos
+        block_size_clamped = min(block_size, remaining_tokens)
         
-        # Update manual settings for this position
-        manual_settings[curr_pos] = block_size
+        print(f"   Generating {block_size_clamped} tokens (positions {curr_pos}:{curr_pos + block_size_clamped})")
         
-        # Move to next block boundary
-        curr_pos += block_size
+        # Generate this block with manual_settings for this position only
+        block_manual_settings = {curr_pos: block_size_clamped}
+        block_sizes_for_gen = calculate_block_sizes(
+            gen_length=gen_length,
+            base_block_length=base_block_length,
+            manual_settings=block_manual_settings
+        )
+        
+        out, _, _, new_entropy, new_confidence, ar_context_tokens, additional_features, new_shannon_entropy = generate_custom(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=current_input,
+            steps=steps,
+            gen_length=gen_length,  # Still request full length, will stop at block boundary
+            block_sizes=block_sizes_for_gen,
+            temperature=temperature,
+            cfg_scale=cfg_scale,
+            remasking=remasking,
+            curr_pos=curr_pos,  # Only generate from curr_pos onwards
+            correct_answer=None,
+            verbose=False
+        )
+        
+        # Step 3: Accumulate generated tokens and features
+        current_input = out
+        
+        # Merge confidence/entropy lists
+        if new_confidence:
+            if curr_pos == 0:
+                confidence_list = list(new_confidence)
+            else:
+                confidence_list.extend(new_confidence[len(confidence_list):])
+        
+        if new_shannon_entropy:
+            if curr_pos == 0:
+                entropy_list = list(new_shannon_entropy)
+            else:
+                entropy_list.extend(new_shannon_entropy[len(entropy_list):])
+        
+        # Merge additional features
+        if additional_features:
+            if curr_pos == 0:
+                additional_features_dict = dict(additional_features)
+            else:
+                additional_features_dict.update(additional_features)
+        
+        # Step 4: Store prediction and move to next position
+        predicted_block_sizes.append(block_size_clamped)
+        curr_pos += block_size_clamped
+        
+        print(f"   ✅ Generated up to position {curr_pos}")
     
-    # Final generation with all predicted block sizes
-    print(f"\n🚀 Running final generation with predicted block sizes: {predicted_block_sizes}")
-    
-    block_sizes = calculate_block_sizes(
-        gen_length=gen_length,
-        base_block_length=base_block_length,
-        manual_settings=manual_settings
-    )
-    
-    out, _, _, _, _, _, _, _ = generate_custom(
-        model=model,
-        tokenizer=tokenizer,
-        prompt=input_ids,
-        steps=steps,
-        gen_length=gen_length,
-        block_sizes=block_sizes,
-        temperature=temperature,
-        cfg_scale=cfg_scale,
-        remasking=remasking,
-        curr_pos=0,
-        correct_answer=None,
-        verbose=False
-    )
+    print(f"\n✅ Generation complete!")
+    print(f"   Total blocks predicted: {len(predicted_block_sizes)}")
+    print(f"   Block sizes: {predicted_block_sizes}")
+    print(f"   Total tokens: {out.shape[1] - prompt_length}")
     
     return out, predicted_block_sizes
 
+
+def extract_features_for_scheduler(confidence_list, entropy_list, position, gen_length,
+                                    additional_features_dict):
+    """
+    Extract features at a given position from already-generated tokens.
+    
+    Args:
+        confidence_list: List of confidence values for generated tokens
+        entropy_list: List of entropy values for generated tokens
+        position: Position to extract features for
+        gen_length: Total generation length
+        additional_features_dict: Dict of additional features at each position
+    
+    Returns:
+        feature_dict: Dictionary with 30 features, or None if not enough tokens
+    """
+    # Check if we have enough tokens
+    if not confidence_list or len(confidence_list) <= position:
+        return None
+    
+    position_relative = round(position / gen_length, 4)
+    
+    # Get additional features at this position
+    additional_feats = additional_features_dict.get(position, {}) if additional_features_dict else {}
+    
+    # Build feature dictionary (30 features used in training)
+    feature_dict = {
+        'position_relative': position_relative,
+        # Confidence features (positions 0-9)
+        'conf_0': additional_feats.get('conf_0', 0.0),
+        'conf_1': additional_feats.get('conf_1', 0.0),
+        'conf_2': additional_feats.get('conf_2', 0.0),
+        'conf_3': additional_feats.get('conf_3', 0.0),
+        'conf_4': additional_feats.get('conf_4', 0.0),
+        'conf_5': additional_feats.get('conf_5', 0.0),
+        'conf_6': additional_feats.get('conf_6', 0.0),
+        'conf_7': additional_feats.get('conf_7', 0.0),
+        'conf_8': additional_feats.get('conf_8', 0.0),
+        'conf_9': additional_feats.get('conf_9', 0.0),
+        # Shannon entropy features (positions 0-9)
+        'shannon_entropy_0': additional_feats.get('shannon_entropy_0', 0.0),
+        'shannon_entropy_1': additional_feats.get('shannon_entropy_1', 0.0),
+        'shannon_entropy_2': additional_feats.get('shannon_entropy_2', 0.0),
+        'shannon_entropy_3': additional_feats.get('shannon_entropy_3', 0.0),
+        'shannon_entropy_4': additional_feats.get('shannon_entropy_4', 0.0),
+        'shannon_entropy_5': additional_feats.get('shannon_entropy_5', 0.0),
+        'shannon_entropy_6': additional_feats.get('shannon_entropy_6', 0.0),
+        'shannon_entropy_7': additional_feats.get('shannon_entropy_7', 0.0),
+        'shannon_entropy_8': additional_feats.get('shannon_entropy_8', 0.0),
+        'shannon_entropy_9': additional_feats.get('shannon_entropy_9', 0.0),
+        # Aggregate features
+        'top1_margin': additional_feats.get('top1_margin', 0.0),
+        'mean_confidence': additional_feats.get('mean_confidence', 0.0),
+        'shannon_mean_entropy': additional_feats.get('shannon_mean_entropy', 0.0),
+        'conf_std': additional_feats.get('conf_std', 0.0),
+        'shannon_entropy_std': additional_feats.get('shannon_entropy_std', 0.0),
+        'top4_conf_min': additional_feats.get('top4_conf_min', 0.0),
+        'next4_conf_min': additional_feats.get('next4_conf_min', 0.0),
+        'top8_conf_min': additional_feats.get('top8_conf_min', 0.0),
+        'next8_conf_min': additional_feats.get('next8_conf_min', 0.0)
+    }
+    
+    return feature_dict
 
 def run_inference_batch_with_scheduler(model, tokenizer, device, scheduler, model_args,
                                         input_csv_path, output_csv_path,
