@@ -1803,3 +1803,360 @@ if __name__ == "__main__":
     
     # Run inference
     main(script_args, model_args, inference_args)
+
+# ==============================================================================
+# XGBOOST SCHEDULER-GUIDED INFERENCE
+# ==============================================================================
+
+def load_scheduler(model_path, use_regression=True):
+    """
+    Load trained XGBoost scheduler model
+    
+    Args:
+        model_path: Path to saved XGBoost model (.json or .ubj file)
+        use_regression: If True, load as XGBRegressor, else XGBClassifier
+    
+    Returns:
+        Loaded XGBoost model
+    """
+    import xgboost as xgb
+    
+    print(f"📥 Loading XGBoost scheduler from: {model_path}")
+    
+    if use_regression:
+        scheduler = xgb.XGBRegressor()
+    else:
+        scheduler = xgb.XGBClassifier()
+    
+    scheduler.load_model(model_path)
+    print(f"✅ Scheduler loaded successfully")
+    
+    return scheduler
+
+
+def extract_features_at_position(model, tokenizer, input_ids, curr_pos, gen_length, 
+                                   base_block_length, steps, manual_settings=None):
+    """
+    Extract features at a given position by running AR generation up to that point.
+    
+    Args:
+        model: The model to use
+        tokenizer: Tokenizer
+        input_ids: Input tensor [1, prompt_length]
+        curr_pos: Current position to extract features for
+        gen_length: Total generation length
+        base_block_length: Base block length
+        steps: Number of steps
+        manual_settings: Dict of {position: block_size} for positions already decided
+    
+    Returns:
+        feature_dict: Dictionary with 13 features used by XGBoost scheduler
+    """
+    if manual_settings is None:
+        manual_settings = {}
+    
+    # Build block_sizes list for generating up to curr_pos
+    # All positions before curr_pos use block_size=1 (AR mode)
+    for i in range(curr_pos):
+        if i not in manual_settings:
+            manual_settings[i] = 1
+    
+    block_sizes = calculate_block_sizes(
+        gen_length=gen_length,
+        base_block_length=base_block_length,
+        manual_settings=manual_settings
+    )
+    
+    if block_sizes is None:
+        return None
+    
+    # Run generation to extract features
+    out, _, _, initial_entropy, initial_confidence, ar_context_tokens, additional_features, initial_shannon_entropy = generate_custom(
+        model,
+        tokenizer,
+        input_ids,
+        steps=steps,
+        gen_length=gen_length,
+        block_sizes=block_sizes,
+        temperature=0.,
+        cfg_scale=0.,
+        remasking='low_confidence',
+        curr_pos=curr_pos,
+        correct_answer=None,
+        verbose=False
+    )
+    
+    # Extract features at curr_pos
+    if not initial_confidence or len(initial_confidence) <= curr_pos:
+        return None
+    
+    confidence = initial_confidence[curr_pos]
+    entropy = initial_entropy[curr_pos] if initial_entropy and len(initial_entropy) > curr_pos else 0.0
+    position_relative = round(curr_pos / gen_length, 4)
+    
+    # Get additional features
+    additional_feats = additional_features.get(curr_pos, {}) if additional_features else {}
+    
+    # Build feature dictionary (13 features used in training)
+    feature_dict = {
+        'position_relative': position_relative,
+        'conf_0': additional_feats.get('conf_0', 0.0),
+        'shannon_entropy_0': additional_feats.get('shannon_entropy_0', 0.0),
+        'top1_margin': additional_feats.get('top1_margin', 0.0),
+        'mean_confidence': additional_feats.get('mean_confidence', 0.0),
+        'shannon_mean_entropy': additional_feats.get('shannon_mean_entropy', 0.0),
+        'conf_std': additional_feats.get('conf_std', 0.0),
+        'shannon_entropy_std': additional_feats.get('shannon_entropy_std', 0.0),
+        'conf_1': additional_feats.get('conf_1', 0.0),
+        'top4_conf_min': additional_feats.get('top4_conf_min', 0.0),
+        'next4_conf_min': additional_feats.get('next4_conf_min', 0.0),
+        'top8_conf_min': additional_feats.get('top8_conf_min', 0.0),
+        'next8_conf_min': additional_feats.get('next8_conf_min', 0.0)
+    }
+    
+    return feature_dict
+
+
+def predict_block_size(scheduler, features, gen_length, use_regression=True):
+    """
+    Predict block size for current position using XGBoost scheduler.
+    
+    Args:
+        scheduler: Trained XGBoost model
+        features: Dict of feature values
+        gen_length: Total generation length
+        use_regression: If True, scheduler outputs continuous value; else class index
+    
+    Returns:
+        block_size (int): Predicted block size (clipped to [1, gen_length])
+    """
+    import numpy as np
+    
+    # Feature order must match training
+    feature_order = [
+        'position_relative', 'conf_0', 'shannon_entropy_0', 'top1_margin',
+        'mean_confidence', 'shannon_mean_entropy', 'conf_std', 'shannon_entropy_std',
+        'conf_1', 'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
+    ]
+    
+    # Build feature array
+    feature_array = np.array([[features[f] for f in feature_order]])
+    
+    if use_regression:
+        # Predict continuous block_size_rel
+        block_size_rel = scheduler.predict(feature_array)[0]
+        block_size = int(round(block_size_rel * gen_length))
+    else:
+        # Predict class and convert to block_size
+        class_probs = scheduler.predict_proba(feature_array)[0]
+        predicted_class = np.argmax(class_probs)
+        
+        # Convert class to relative size (classes: 0=1/32, 1=1/16, 2=1/8, 3=1/4, 4=1/2, 5=1)
+        rel_values = [1/32, 1/16, 1/8, 1/4, 1/2, 1.0]
+        block_size_rel = rel_values[predicted_class]
+        block_size = int(round(block_size_rel * gen_length))
+    
+    # Clip to valid range
+    block_size = max(1, min(gen_length, block_size))
+    
+    return block_size
+
+
+def generate_with_scheduler(model, tokenizer, scheduler, input_ids, gen_length, 
+                             base_block_length, steps, use_regression=True, 
+                             temperature=0., cfg_scale=0., remasking='low_confidence'):
+    """
+    Generate text using XGBoost scheduler to predict block sizes incrementally.
+    
+    This function:
+    1. Starts at position 0
+    2. For each block boundary:
+       a. Extract features at current position
+       b. Query XGBoost to predict optimal block_size
+       c. Continue generation with predicted block_size
+    3. Returns final generated tokens
+    
+    Args:
+        model: The model to use
+        tokenizer: Tokenizer
+        scheduler: Trained XGBoost model
+        input_ids: Input tensor [1, prompt_length]
+        gen_length: Total generation length
+        base_block_length: Base block length
+        steps: Number of steps
+        use_regression: If True, scheduler is regression model; else classification
+        temperature: Sampling temperature
+        cfg_scale: Classifier-free guidance scale
+        remasking: Remasking strategy
+    
+    Returns:
+        out: Generated tokens [1, prompt_length + gen_length]
+        predicted_block_sizes: List of block sizes predicted by scheduler
+    """
+    print(f"\n🤖 Starting scheduler-guided generation (gen_length={gen_length})")
+    
+    predicted_block_sizes = []
+    manual_settings = {}
+    
+    curr_pos = 0
+    
+    while curr_pos < gen_length:
+        print(f"\n--- Position {curr_pos}/{gen_length} ---")
+        
+        # Extract features at current position
+        features = extract_features_at_position(
+            model=model,
+            tokenizer=tokenizer,
+            input_ids=input_ids,
+            curr_pos=curr_pos,
+            gen_length=gen_length,
+            base_block_length=base_block_length,
+            steps=steps,
+            manual_settings=manual_settings.copy()
+        )
+        
+        if features is None:
+            print(f"⚠️  Could not extract features at position {curr_pos}, using default block_size=1")
+            block_size = 1
+        else:
+            # Predict block size using scheduler
+            block_size = predict_block_size(
+                scheduler=scheduler,
+                features=features,
+                gen_length=gen_length,
+                use_regression=use_regression
+            )
+            
+            print(f"🎯 Predicted block_size: {block_size}")
+            print(f"   Key features: conf_0={features['conf_0']:.3f}, "
+                  f"shannon_entropy_0={features['shannon_entropy_0']:.3f}, "
+                  f"position_relative={features['position_relative']:.3f}")
+        
+        # Store predicted block size
+        predicted_block_sizes.append(block_size)
+        
+        # Update manual settings for this position
+        manual_settings[curr_pos] = block_size
+        
+        # Move to next block boundary
+        curr_pos += block_size
+    
+    # Final generation with all predicted block sizes
+    print(f"\n🚀 Running final generation with predicted block sizes: {predicted_block_sizes}")
+    
+    block_sizes = calculate_block_sizes(
+        gen_length=gen_length,
+        base_block_length=base_block_length,
+        manual_settings=manual_settings
+    )
+    
+    out, _, _, _, _, _, _, _ = generate_custom(
+        model=model,
+        tokenizer=tokenizer,
+        prompt=input_ids,
+        steps=steps,
+        gen_length=gen_length,
+        block_sizes=block_sizes,
+        temperature=temperature,
+        cfg_scale=cfg_scale,
+        remasking=remasking,
+        curr_pos=0,
+        correct_answer=None,
+        verbose=False
+    )
+    
+    return out, predicted_block_sizes
+
+
+def run_inference_batch_with_scheduler(model, tokenizer, device, scheduler, model_args,
+                                        input_csv_path, output_csv_path,
+                                        steps=16, gen_length=32, base_block_length=2,
+                                        use_regression=True, instruction=None):
+    """
+    Run batch inference using XGBoost scheduler to predict block sizes.
+    
+    Args:
+        model: The model to use
+        tokenizer: Tokenizer
+        device: Device to run on
+        scheduler: Trained XGBoost scheduler
+        model_args: Model arguments
+        input_csv_path: Path to input CSV with questions
+        output_csv_path: Path to save output CSV
+        steps: Number of steps
+        gen_length: Generation length
+        base_block_length: Base block length
+        use_regression: If True, scheduler is regression model; else classification
+        instruction: Optional instruction to prepend to questions
+    
+    Returns:
+        DataFrame with results
+    """
+    import pandas as pd
+    
+    print(f"📥 Loading: {input_csv_path}")
+    df = pd.read_csv(input_csv_path)
+    print(f"🔢 Found {len(df)} rows")
+    
+    completions = []
+    completion_numericals = []
+    predicted_block_sizes_list = []
+    
+    for i, row in enumerate(df.itertuples(), start=1):
+        question = getattr(row, "question")
+        
+        # Apply instruction if provided
+        if instruction is not None:
+            question_with_instruction = instruction + question
+        else:
+            question_with_instruction = question
+        
+        # Apply chat template
+        messages = [{"role": "user", "content": question_with_instruction}]
+        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+        
+        print(f"\n{'='*80}")
+        print(f"Question {i}/{len(df)}: {question[:60]}...")
+        print(f"{'='*80}")
+        
+        # Generate with scheduler
+        out, predicted_blocks = generate_with_scheduler(
+            model=model,
+            tokenizer=tokenizer,
+            scheduler=scheduler,
+            input_ids=input_ids,
+            gen_length=gen_length,
+            base_block_length=base_block_length,
+            steps=steps,
+            use_regression=use_regression
+        )
+        
+        # Decode output
+        output_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        numeric_answer = extract_numerical(output_text)
+        
+        completions.append(output_text)
+        completion_numericals.append(numeric_answer)
+        predicted_block_sizes_list.append(str(predicted_blocks))  # Store as string for CSV
+        
+        print(f"\n✅ Output: {output_text[:100]}...")
+        print(f"📊 Predicted block sizes: {predicted_blocks}")
+        print(f"🔢 Numerical answer: {numeric_answer}")
+    
+    # Save results
+    df["completion"] = completions
+    df["completion_numerical"] = completion_numericals
+    df["predicted_block_sizes"] = predicted_block_sizes_list
+    df.to_csv(output_csv_path, index=False)
+    
+    print(f"\n✅ Saved output to: {output_csv_path}")
+    
+    # Calculate accuracy if answer column exists
+    if "answer_numerical" in df.columns:
+        correct_count = sum(df['answer_numerical'] == df['completion_numerical'])
+        total_count = len(df)
+        accuracy = (correct_count / total_count) * 100
+        print(f"\n📈 Accuracy: {correct_count}/{total_count} ({accuracy:.2f}%)")
+    
+    return df

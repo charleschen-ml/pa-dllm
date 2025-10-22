@@ -35,9 +35,9 @@ if __name__ == '__main__':
     ########################################################
     # CONFIGURATION: Choose mode
     ########################################################
-    USE_PARALLEL = True  # Set to False for sequential mode (needed for batch inference)
-    NUM_GPUS = 4  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = None  # Number of questions to process (None = process all questions in CSV)
+    USE_PARALLEL = False  # Set to False for sequential mode (needed for batch inference)
+    NUM_GPUS = 1  # Only used if USE_PARALLEL=True
+    NUM_QUESTIONS = 1  # Number of questions to process (None = process all questions in CSV)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -117,27 +117,27 @@ if __name__ == '__main__':
     ########################################################
     # Create dataset of questions answered correctly
     ########################################################
-    # Load gsm8k
-    df = load_gsm8k(start=2000, end=3000)
+    # # Load gsm8k
+    # df = load_gsm8k(start=0, end=1)
 
-    # Run batch inference
-    df = run_inference_batch(
-        model=model,
-        tokenizer=tokenizer,
-        device=device,
-        model_args=model_args,
-        input_csv_path="./data/gsm8k.csv",
-        output_csv_path="./data/gsm8k_output.csv",
-        steps=32,
-        gen_length=32,
-        block_length=1,
-        instruction=instruction
-    )
-    # Load df from csv
-    df = pd.read_csv("./data/gsm8k_output.csv")
-    # Calculate score
-    correct_path = "./data/gsm8k_correct.csv"
-    calculate_score(df, correct_path)
+    # # Run batch inference
+    # df = run_inference_batch(
+    #     model=model,
+    #     tokenizer=tokenizer,
+    #     device=device,
+    #     model_args=model_args,
+    #     input_csv_path="./data/gsm8k.csv",
+    #     output_csv_path="./data/gsm8k_output.csv",
+    #     steps=32,
+    #     gen_length=32,
+    #     block_length=1,
+    #     instruction=instruction
+    # )
+    # # Load df from csv
+    # df = pd.read_csv("./data/gsm8k_output.csv")
+    # # Calculate score
+    # correct_path = "./data/gsm8k_correct.csv"
+    # calculate_score(df, correct_path)
 
     ########################################################
     # Load single prompt (only for sequential mode)
@@ -228,59 +228,119 @@ if __name__ == '__main__':
     ########################################################
     # Augment multiple samples: Sequential or Parallel
     ########################################################
-    start_time = time.time()
+    # start_time = time.time()
     
-    # Determine how many questions to process
-    csv_path = "./data/gsm8k_correct.csv"
-    df_temp = pd.read_csv(csv_path)
-    total_questions = len(df_temp)
-    print(f"📊 Found {total_questions} questions in {csv_path}")
+    # # Determine how many questions to process
+    # csv_path = "./data/gsm8k_correct.csv"
+    # df_temp = pd.read_csv(csv_path)
+    # total_questions = len(df_temp)
+    # print(f"📊 Found {total_questions} questions in {csv_path}")
     
-    # Use NUM_QUESTIONS if specified, otherwise process all
-    questions_to_process = NUM_QUESTIONS if NUM_QUESTIONS is not None else total_questions
-    print(f"🎯 Processing {questions_to_process} questions")
+    # # Use NUM_QUESTIONS if specified, otherwise process all
+    # questions_to_process = NUM_QUESTIONS if NUM_QUESTIONS is not None else total_questions
+    # print(f"🎯 Processing {questions_to_process} questions")
     
-    if USE_PARALLEL:
-        print(f"🚀 Starting PARALLEL mode with {NUM_GPUS} GPUs...")
-        from inference import augment_multiple_samples_parallel
+    # if USE_PARALLEL:
+    #     print(f"🚀 Starting PARALLEL mode with {NUM_GPUS} GPUs...")
+    #     from inference import augment_multiple_samples_parallel
         
-        all_training_samples = augment_multiple_samples_parallel(
-            model_args=model_args,
-            csv_path=csv_path,
-            num_questions=questions_to_process,
-            gen_length=32,
-            base_block_length=1,
-            steps=32,
-            break_after_answer_found=True,
-            output_json_path="./data/sft_training_samples_multi_greedy_parallel.json",
-            output_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
-            instruction=instruction,
-            num_gpus=NUM_GPUS
-        )
-    else:
-        print(f"🚀 Starting SEQUENTIAL mode...")
-        all_training_samples = augment_multiple_samples(
-            model=model,
-            tokenizer=tokenizer,
-            device=device,
-            model_args=model_args,
-            csv_path=csv_path,
-            num_questions=questions_to_process,
-            gen_length=32,
-            base_block_length=1,
-            steps=32,
-            break_after_answer_found=True,
-            output_json_path="./data/sft_training_samples_multi_greedy.json",
-            output_csv_path="./data/sft_training_samples_multi_greedy.csv",
-            instruction=instruction
-        )
+    #     all_training_samples = augment_multiple_samples_parallel(
+    #         model_args=model_args,
+    #         csv_path=csv_path,
+    #         num_questions=questions_to_process,
+    #         gen_length=32,
+    #         base_block_length=1,
+    #         steps=32,
+    #         break_after_answer_found=True,
+    #         output_json_path="./data/sft_training_samples_multi_greedy_parallel.json",
+    #         output_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
+    #         instruction=instruction,
+    #         num_gpus=NUM_GPUS
+    #     )
+    # else:
+    #     print(f"🚀 Starting SEQUENTIAL mode...")
+    #     all_training_samples = augment_multiple_samples(
+    #         model=model,
+    #         tokenizer=tokenizer,
+    #         device=device,
+    #         model_args=model_args,
+    #         csv_path=csv_path,
+    #         num_questions=questions_to_process,
+    #         gen_length=32,
+    #         base_block_length=1,
+    #         steps=32,
+    #         break_after_answer_found=True,
+    #         output_json_path="./data/sft_training_samples_multi_greedy.json",
+    #         output_csv_path="./data/sft_training_samples_multi_greedy.csv",
+    #         instruction=instruction
+    #     )
     
+    # end_time = time.time()
+    # elapsed_time = end_time - start_time
+    # print(f"\n⏱️  TIMING REPORT:")
+    # print(f"  📊 Total samples generated: {len(all_training_samples)}")
+    # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+    # print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
+    # if USE_PARALLEL:
+    #     print(f"  🚀 Used {NUM_GPUS} GPUs in parallel!")
+    #     print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
+
+    ########################################################
+    # Run inference with XGBoost scheduler (FAST ADAPTIVE INFERENCE)
+    ########################################################
+    print("="*80)
+    print("🚀 XGBOOST SCHEDULER-GUIDED INFERENCE")
+    print("="*80)
+    
+    # Load scheduler functions
+    from inference import load_scheduler, run_inference_batch_with_scheduler
+    
+    # Configuration
+    SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model
+    USE_REGRESSION = True  # True for regression, False for classification
+    INPUT_CSV = "./data/gsm8k_correct.csv"  # Input questions
+    OUTPUT_CSV = "./output/predictions_with_scheduler.csv"  # Output predictions
+    
+    # Generation settings
+    GEN_LENGTH = 32
+    BASE_BLOCK_LENGTH = 1
+    STEPS = 32
+    
+    # Load scheduler
+    scheduler = load_scheduler(SCHEDULER_PATH, use_regression=USE_REGRESSION)
+    
+    print(f"\n{'='*80}")
+    print("📊 INFERENCE SETTINGS")
+    print(f"{'='*80}")
+    print(f"  Input:  {INPUT_CSV}")
+    print(f"  Output: {OUTPUT_CSV}")
+    print(f"  Scheduler: {'Regression' if USE_REGRESSION else 'Classification'}")
+    print(f"  Generation: gen_length={GEN_LENGTH}, steps={STEPS}")
+    print(f"{'='*80}\n")
+    
+    # Run inference
+    start_time = time.time()
+    results_df = run_inference_batch_with_scheduler(
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        scheduler=scheduler,
+        model_args=model_args,
+        input_csv_path=INPUT_CSV,
+        output_csv_path=OUTPUT_CSV,
+        steps=STEPS,
+        gen_length=GEN_LENGTH,
+        base_block_length=BASE_BLOCK_LENGTH,
+        use_regression=USE_REGRESSION,
+        instruction=instruction
+    )
     end_time = time.time()
     elapsed_time = end_time - start_time
+    
+    print(f"\n{'='*80}")
+    print("✅ INFERENCE COMPLETE!")
+    print(f"{'='*80}")
     print(f"\n⏱️  TIMING REPORT:")
-    print(f"  📊 Total samples generated: {len(all_training_samples)}")
+    print(f"  📊 Questions processed: {len(results_df)}")
     print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
-    print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
-    if USE_PARALLEL:
-        print(f"  🚀 Used {NUM_GPUS} GPUs in parallel!")
-        print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
+    print(f"  ⚡ Time per question: {elapsed_time/len(results_df):.2f} seconds")
