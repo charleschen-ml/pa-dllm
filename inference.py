@@ -2032,6 +2032,7 @@ def generate_with_scheduler(model, tokenizer, scheduler, input_ids, gen_length,
     Returns:
         out: Generated tokens [1, prompt_length + gen_length]
         predicted_block_sizes: List of block sizes predicted by scheduler
+        num_steps: Number of decoding steps taken (for speedup calculation)
     """
     import torch
     import numpy as np
@@ -2040,6 +2041,7 @@ def generate_with_scheduler(model, tokenizer, scheduler, input_ids, gen_length,
     
     predicted_block_sizes = []
     curr_pos = 0
+    num_steps = 0  # Track number of decoding steps
     
     # Current input for generation (starts with prompt, grows as we generate)
     current_input = input_ids.clone()
@@ -2136,15 +2138,20 @@ def generate_with_scheduler(model, tokenizer, scheduler, input_ids, gen_length,
         # Step 4: Store prediction and move to next position
         predicted_block_sizes.append(block_size_clamped)
         curr_pos += block_size_clamped
+        num_steps += 1  # Increment step counter
         
         print(f"   ✅ Generated up to position {curr_pos}")
     
-    print(f"\n✅ Generation complete!")
-    print(f"   Total blocks predicted: {len(predicted_block_sizes)}")
-    print(f"   Block sizes: {predicted_block_sizes}")
-    print(f"   Total tokens: {out.shape[1] - prompt_length}")
+    # Calculate speedup
+    speedup = gen_length / num_steps if num_steps > 0 else 1.0
     
-    return out, predicted_block_sizes
+    print(f"\n✅ Generation complete!")
+    print(f"   Total decoding steps: {num_steps} (vs {gen_length} for pure AR)")
+    print(f"   Speedup: {speedup:.2f}x")
+    print(f"   Block sizes: {predicted_block_sizes}")
+    print(f"   Total tokens generated: {out.shape[1] - prompt_length}")
+    
+    return out, predicted_block_sizes, num_steps
 
 
 def extract_features_for_scheduler(confidence_list, entropy_list, position, gen_length,
@@ -2243,6 +2250,7 @@ def run_inference_batch_with_scheduler(model, tokenizer, device, scheduler, mode
     completions = []
     completion_numericals = []
     predicted_block_sizes_list = []
+    num_steps_list = []
     
     for i, row in enumerate(df.itertuples(), start=1):
         question = getattr(row, "question")
@@ -2263,7 +2271,7 @@ def run_inference_batch_with_scheduler(model, tokenizer, device, scheduler, mode
         print(f"{'='*80}")
         
         # Generate with scheduler
-        out, predicted_blocks = generate_with_scheduler(
+        out, predicted_blocks, num_steps = generate_with_scheduler(
             model=model,
             tokenizer=tokenizer,
             scheduler=scheduler,
@@ -2281,6 +2289,7 @@ def run_inference_batch_with_scheduler(model, tokenizer, device, scheduler, mode
         completions.append(output_text)
         completion_numericals.append(numeric_answer)
         predicted_block_sizes_list.append(str(predicted_blocks))  # Store as string for CSV
+        num_steps_list.append(num_steps)
         
         print(f"\n✅ Output: {output_text[:100]}...")
         print(f"📊 Predicted block sizes: {predicted_blocks}")
@@ -2290,9 +2299,27 @@ def run_inference_batch_with_scheduler(model, tokenizer, device, scheduler, mode
     df["completion"] = completions
     df["completion_numerical"] = completion_numericals
     df["predicted_block_sizes"] = predicted_block_sizes_list
+    df["num_steps"] = num_steps_list
+    df["speedup"] = [gen_length / steps if steps > 0 else 1.0 for steps in num_steps_list]
     df.to_csv(output_csv_path, index=False)
     
     print(f"\n✅ Saved output to: {output_csv_path}")
+    
+    # Calculate and display speedup statistics
+    import numpy as np
+    avg_steps = np.mean(num_steps_list)
+    avg_speedup = gen_length / avg_steps
+    min_speedup = gen_length / max(num_steps_list)
+    max_speedup = gen_length / min(num_steps_list)
+    
+    print(f"\n{'='*80}")
+    print(f"⚡ SPEEDUP STATISTICS")
+    print(f"{'='*80}")
+    print(f"Generation length (AR baseline): {gen_length} steps")
+    print(f"Average steps (scheduler-guided): {avg_steps:.2f} steps")
+    print(f"Average speedup: {avg_speedup:.2f}x")
+    print(f"Speedup range: [{min_speedup:.2f}x, {max_speedup:.2f}x]")
+    print(f"{'='*80}")
     
     # Calculate accuracy if answer column exists
     if "answer_numerical" in df.columns:
