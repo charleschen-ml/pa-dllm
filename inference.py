@@ -1313,177 +1313,6 @@ def generate_custom_batch_parallel(
         })
     return final
 
-def augment_one_sample_batch(
-    model, tokenizer, device, prompt, model_args,
-    gen_length=32, base_block_length=2, steps=16,
-    correct_answer=None, break_after_answer_found=True,
-    instruction=None,
-    output_json_path="./data/sft_training_samples_batch.json",
-    output_csv_path="./data/sft_training_samples_batch.csv"
-):
-    """
-    Batched augmentation: process multiple curr_pos values in one go.
-    Mirrors augment_one_sample, but parallelizes across curr_pos positions.
-    Saves JSON/CSV like augment_one_sample.
-    """
-
-    print(f"\n🔄 Augmenting sample (BATCH) with gen_length={gen_length}, base_block_length={base_block_length}, steps={steps}")
-
-    if instruction is not None:
-        prompt = instruction + prompt
-
-    # Tokenize once
-    m = [{"role": "user", "content": prompt}]
-    prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-    input_ids = tokenizer(prompt_str)["input_ids"]
-    input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
-
-    training_samples = []
-
-    # Build curr_pos_list (all positions 0..gen_length-1)
-    curr_pos_list = list(range(gen_length))
-
-    prompts = input_ids.repeat(len(curr_pos_list), 1)
-
-    # Swap between sequential and parallel here
-    use_parallel = True
-    if use_parallel:
-        results = generate_custom_batch_parallel(
-            model,
-            tokenizer,
-            prompts,
-            curr_pos_list=curr_pos_list,
-            steps=steps,
-            gen_length=gen_length,
-            base_block_length=base_block_length,
-            candidate_block_sizes=None,  # defaults to 1..16; can set to full if needed
-            correct_answer=correct_answer,
-            verbose=False,
-        )
-    else:
-        results = generate_custom_batch(
-            model,
-            tokenizer,
-            prompts,
-            steps=steps,
-            gen_length=gen_length,
-            base_block_length=base_block_length,
-            manual_settings={},  # rebuilt internally per curr_pos
-            curr_pos_list=curr_pos_list,
-            correct_answer=correct_answer,
-            verbose=False,
-        )
-
-    # Convert results into training_samples list
-    for idx, res in enumerate(results):
-        curr_pos = res["curr_pos"]
-        block_size = res["chosen_block_size"]
-
-        # === Build feature row (mirrors generate_one_sample) ===
-        features = []
-        if res["initial_confidence"] and res["initial_entropy"]:
-            confidence = res["initial_confidence"][curr_pos]
-            entropy = res["initial_entropy"][curr_pos]
-
-            token_id, token_text = None, None
-            if res["ar_context_tokens"] is not None:
-                gen_start = prompts.shape[1]
-                pos_idx = gen_start + curr_pos
-                if pos_idx < res["ar_context_tokens"].shape[1]:
-                    token_id = res["ar_context_tokens"][0, pos_idx].item()
-                    token_text = tokenizer.decode([token_id], skip_special_tokens=False)
-
-            position_relative = round(curr_pos / gen_length, 4)
-            additional_feats = res["additional_features"].get(curr_pos, {}) if res["additional_features"] else {}
-
-            feature_row = [
-                confidence, entropy, curr_pos, token_id, token_text,
-                position_relative,
-                additional_feats.get("conf_0", 0.0),
-                additional_feats.get("entropy_0", 0.0),
-                additional_feats.get("shannon_entropy_0", 0.0),
-                additional_feats.get("top1_margin", 0.0),
-                additional_feats.get("mean_confidence", 0.0),
-                additional_feats.get("mean_entropy", 0.0),
-                additional_feats.get("shannon_mean_entropy", 0.0),
-                additional_feats.get("conf_std", 0.0),
-                additional_feats.get("entropy_std", 0.0),
-                additional_feats.get("shannon_entropy_std", 0.0),
-                additional_feats.get("conf_1", 0.0),
-                additional_feats.get("top4_conf_min", 0.0),
-                additional_feats.get("next4_conf_min", 0.0),
-                additional_feats.get("top8_conf_min", 0.0),
-                additional_feats.get("next8_conf_min", 0.0),
-            ]
-            features.append(feature_row)
-
-        remaining_length = gen_length - curr_pos
-        block_size_rel = round(block_size / remaining_length, 4) if remaining_length > 0 else 0.0
-        
-        sample = {
-            "features": features,
-            "block_size": block_size,
-            "block_size_rel": block_size_rel,
-            "full_confidence_list": res["initial_confidence"],
-            "full_entropy_list": res["initial_entropy"],
-            "full_token_ids": res["ar_context_tokens"].tolist() if res["ar_context_tokens"] is not None else [],
-            "full_token_texts": tokenizer.batch_decode(
-                res["ar_context_tokens"][0], skip_special_tokens=False
-            ) if res["ar_context_tokens"] is not None else [],
-            "answer_found": block_size == (gen_length - curr_pos),
-        }
-        training_samples.append(sample)
-
-        if sample["answer_found"]:
-            print(f"🎯 Answer found at curr_pos={curr_pos} (batch mode)")
-            if break_after_answer_found:
-                print("🛑 Breaking data augmentation (batch mode, break_after_answer_found=True)")
-                break
-
-    # === Save to JSON ===
-    with open(output_json_path, "w") as f:
-        json.dump(training_samples, f, indent=2)
-
-    # === Save to CSV ===
-    with open(output_csv_path, "w", newline='') as f:
-        writer = csv.writer(f)
-        header = [
-            'sample_id', 'confidence', 'entropy', 'position', 'token_id', 'token_text',
-            'position_relative', 'conf_0', 'entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
-            'conf_std', 'entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
-            'top8_conf_min', 'next8_conf_min', 'block_size', 'answer_found',
-            'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts'
-        ]
-        writer.writerow(header)
-
-        for sample_id, sample in enumerate(training_samples):
-            if sample['features']:
-                feature = sample['features'][0]
-                writer.writerow([
-                    sample_id, *feature,
-                    sample['block_size'], sample['answer_found'],
-                    sample.get('full_confidence_list', []),
-                    sample.get('full_entropy_list', []),
-                    sample.get('full_token_ids', []),
-                    sample.get('full_token_texts', [])
-                ])
-            else:
-                writer.writerow([
-                    sample_id, 0.0, 0.0, 0, None, None, 0.0,
-                    *([0.0] * 12),
-                    0, False,
-                    sample.get('full_confidence_list', []),
-                    sample.get('full_entropy_list', []),
-                    sample.get('full_token_ids', []),
-                    sample.get('full_token_texts', [])
-                ])
-
-    print(f"\n✅ Done (BATCH). Saved {len(training_samples)} samples to:")
-    print(f"  📄 JSON: {output_json_path}")
-    print(f"  📊 CSV:  {output_csv_path}")
-
-    return training_samples
-
 def main(script_args, model_args, inference_args):
     """
     Args:
@@ -1997,161 +1826,6 @@ def predict_block_size(scheduler, features, gen_length, use_regression=True):
     return block_size
 
 
-def generate_with_scheduler(model, tokenizer, scheduler, input_ids, gen_length, 
-                             base_block_length, steps, use_regression=True, 
-                             temperature=0., cfg_scale=0., remasking='low_confidence'):
-    """
-    Generate text using XGBoost scheduler to predict block sizes incrementally.
-    
-    GENERATION-FIRST approach:
-    1. For each position:
-       a. Generate next block (using predicted or default block_size)
-       b. Extract features from ALL tokens generated so far
-       c. Query XGBoost to predict optimal block_size for next position
-       d. Move to next position
-    2. Return final generated tokens
-    
-    Benefits:
-    - Each position generated ONCE (efficient)
-    - Features extracted from actual generated tokens (robust)
-    - Handles early stopping gracefully
-    
-    Args:
-        model: The model to use
-        tokenizer: Tokenizer
-        scheduler: Trained XGBoost model
-        input_ids: Input tensor [1, prompt_length]
-        gen_length: Total generation length
-        base_block_length: Base block length
-        steps: Number of steps
-        use_regression: If True, scheduler is regression model; else classification
-        temperature: Sampling temperature
-        cfg_scale: Classifier-free guidance scale
-        remasking: Remasking strategy
-    
-    Returns:
-        out: Generated tokens [1, prompt_length + gen_length]
-        predicted_block_sizes: List of block sizes predicted by scheduler
-        num_steps: Number of decoding steps taken (for speedup calculation)
-    """
-    import torch
-    import numpy as np
-    
-    print(f"\n🤖 Starting scheduler-guided INCREMENTAL generation (gen_length={gen_length})")
-    
-    predicted_block_sizes = []
-    curr_pos = 0
-    num_steps = 0  # Track number of decoding steps
-    
-    # Current input for generation (starts with prompt, grows as we generate)
-    current_input = input_ids.clone()
-    prompt_length = input_ids.shape[1]
-    
-    while curr_pos < gen_length:
-        print(f"\n--- Position {curr_pos}/{gen_length} ---")
-        
-        # Step 1: Predict block size for this position using features from ALL tokens so far
-        if curr_pos == 0:
-            # At position 0, use default block size
-            block_size = base_block_length
-            print(f"🎯 Position 0: Using default block_size={block_size}")
-        else:
-            # Extract features from tokens generated so far
-            # This uses actual tokens, not re-generated
-            features = extract_features_for_scheduler(
-                confidence_list=confidence_list,
-                entropy_list=entropy_list,
-                position=curr_pos,
-                gen_length=gen_length,
-                additional_features_dict=additional_features_dict
-            )
-            
-            if features is None:
-                print(f"⚠️  Could not extract features at position {curr_pos}, using default block_size=1")
-                block_size = 1
-            else:
-                # Predict block size using scheduler
-                block_size = predict_block_size(
-                    scheduler=scheduler,
-                    features=features,
-                    gen_length=gen_length,
-                    use_regression=use_regression
-                )
-                
-                print(f"🎯 Predicted block_size: {block_size}")
-                print(f"   Key features: conf_0={features['conf_0']:.3f}, "
-                      f"shannon_entropy_0={features['shannon_entropy_0']:.3f}, "
-                      f"position_relative={features['position_relative']:.3f}")
-        
-        # Step 2: Generate next block
-        remaining_tokens = gen_length - curr_pos
-        block_size_clamped = min(block_size, remaining_tokens)
-        
-        print(f"   Generating {block_size_clamped} tokens (positions {curr_pos}:{curr_pos + block_size_clamped})")
-        
-        # Generate this block with manual_settings for this position only
-        block_manual_settings = {curr_pos: block_size_clamped}
-        block_sizes_for_gen = calculate_block_sizes(
-            gen_length=gen_length,
-            base_block_length=base_block_length,
-            manual_settings=block_manual_settings
-        )
-        
-        out, _, _, new_entropy, new_confidence, ar_context_tokens, additional_features, new_shannon_entropy = generate_custom(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=current_input,
-            steps=steps,
-            gen_length=gen_length,  # Still request full length, will stop at block boundary
-            block_sizes=block_sizes_for_gen,
-            temperature=temperature,
-            cfg_scale=cfg_scale,
-            remasking=remasking,
-            curr_pos=curr_pos,  # Only generate from curr_pos onwards
-            correct_answer=None,
-            verbose=False
-        )
-        
-        # Step 3: Accumulate generated tokens and features
-        current_input = out
-        
-        # Merge confidence/entropy lists
-        if new_confidence:
-            if curr_pos == 0:
-                confidence_list = list(new_confidence)
-            else:
-                confidence_list.extend(new_confidence[len(confidence_list):])
-        
-        if new_shannon_entropy:
-            if curr_pos == 0:
-                entropy_list = list(new_shannon_entropy)
-            else:
-                entropy_list.extend(new_shannon_entropy[len(entropy_list):])
-        
-        # Merge additional features
-        if additional_features:
-            if curr_pos == 0:
-                additional_features_dict = dict(additional_features)
-            else:
-                additional_features_dict.update(additional_features)
-        
-        # Step 4: Store prediction and move to next position
-        predicted_block_sizes.append(block_size_clamped)
-        curr_pos += block_size_clamped
-        num_steps += 1  # Increment step counter
-        
-        print(f"   ✅ Generated up to position {curr_pos}")
-    
-    # Calculate speedup
-    speedup = gen_length / num_steps if num_steps > 0 else 1.0
-    
-    print(f"\n✅ Generation complete!")
-    print(f"   Total decoding steps: {num_steps} (vs {gen_length} for pure AR)")
-    print(f"   Speedup: {speedup:.2f}x")
-    print(f"   Block sizes: {predicted_block_sizes}")
-    print(f"   Total tokens generated: {out.shape[1] - prompt_length}")
-    
-    return out, predicted_block_sizes, num_steps
 
 
 def extract_features_for_scheduler(confidence_list, entropy_list, position, gen_length,
@@ -2216,6 +1890,149 @@ def extract_features_for_scheduler(confidence_list, entropy_list, position, gen_
     }
     
     return feature_dict
+
+def generate_with_scheduler(model, tokenizer, scheduler, input_ids, gen_length, 
+                             base_block_length, steps, use_regression=True, 
+                             temperature=0., cfg_scale=0., remasking='low_confidence'):
+    """
+    Generate text using XGBoost scheduler to predict block sizes incrementally.
+    
+    EFFICIENT APPROACH:
+    - Generates each block ONCE without redundant regeneration
+    - Uses generate_block_incremental() to decode blocks one at a time
+    - XGBoost predicts block_size at each position (including position 0)
+    - Each block decoded in ONE forward pass (steps_per_block=1, no refinement)
+    
+    Args:
+        model: The model to use
+        tokenizer: Tokenizer
+        scheduler: Trained XGBoost model
+        input_ids: Input tensor [1, prompt_length]
+        gen_length: Total generation length
+        base_block_length: Base block length (not used, kept for compatibility)
+        steps: Number of steps (not used, kept for compatibility)
+        use_regression: If True, scheduler is regression model; else classification
+        temperature: Sampling temperature
+        cfg_scale: Classifier-free guidance scale
+        remasking: Remasking strategy
+    
+    Returns:
+        out: Generated tokens [1, prompt_length + gen_length]
+        predicted_block_sizes: List of block sizes predicted by scheduler
+        num_steps: Number of decoding steps taken (for speedup calculation)
+    """
+    from generate import generate_block_incremental
+    import torch
+    import numpy as np
+    
+    print(f"\n🤖 Starting EFFICIENT scheduler-guided generation (gen_length={gen_length})")
+    
+    mask_id = 126336  # [MASK] token
+    prompt_length = input_ids.shape[1]
+    
+    # Initialize x with prompt + masked completion
+    x = torch.full((1, prompt_length + gen_length), mask_id, dtype=torch.long).to(model.device)
+    x[:, :prompt_length] = input_ids.clone()
+    
+    predicted_block_sizes = []
+    curr_pos = 0
+    num_steps = 0
+    
+    # Track features for scheduler
+    confidence_list = []
+    entropy_list = []
+    additional_features_dict = {}
+    
+    while curr_pos < gen_length:
+        print(f"\n--- Position {curr_pos}/{gen_length} ---")
+        
+        # Step 1: Predict block size using XGBoost (for ALL positions, including position 0)
+        if curr_pos == 0:
+            # At position 0, we don't have features yet, so use default/zero features
+            # This allows XGBoost to still make a prediction (e.g., could predict 3 instead of 1)
+            features = {
+                'position_relative': 0.0,
+                'conf_0': 0.0, 'conf_1': 0.0, 'conf_2': 0.0, 'conf_3': 0.0, 'conf_4': 0.0,
+                'conf_5': 0.0, 'conf_6': 0.0, 'conf_7': 0.0, 'conf_8': 0.0, 'conf_9': 0.0,
+                'shannon_entropy_0': 0.0, 'shannon_entropy_1': 0.0, 'shannon_entropy_2': 0.0,
+                'shannon_entropy_3': 0.0, 'shannon_entropy_4': 0.0, 'shannon_entropy_5': 0.0,
+                'shannon_entropy_6': 0.0, 'shannon_entropy_7': 0.0, 'shannon_entropy_8': 0.0,
+                'shannon_entropy_9': 0.0, 'top1_margin': 0.0, 'mean_confidence': 0.0,
+                'shannon_mean_entropy': 0.0, 'conf_std': 0.0, 'shannon_entropy_std': 0.0,
+                'top4_conf_min': 0.0, 'next4_conf_min': 0.0, 'top8_conf_min': 0.0, 'next8_conf_min': 0.0
+            }
+            block_size = predict_block_size(
+                scheduler=scheduler,
+                features=features,
+                gen_length=gen_length,
+                use_regression=use_regression
+            )
+            print(f"🎯 Position 0: XGBoost predicted block_size={block_size} (using default features)")
+        else:
+            features = extract_features_for_scheduler(
+                confidence_list=confidence_list,
+                entropy_list=entropy_list,
+                position=curr_pos,
+                gen_length=gen_length,
+                additional_features_dict=additional_features_dict
+            )
+            
+            if features is None:
+                block_size = 1
+                print(f"⚠️  Could not extract features, defaulting to block_size=1")
+            else:
+                block_size = predict_block_size(
+                    scheduler=scheduler,
+                    features=features,
+                    gen_length=gen_length,
+                    use_regression=use_regression
+                )
+                print(f"🎯 Predicted block_size: {block_size}")
+        
+        # Step 2: Clamp block size
+        remaining_tokens = gen_length - curr_pos
+        block_size_clamped = min(block_size, remaining_tokens)
+        
+        print(f"   Generating {block_size_clamped} tokens (positions {curr_pos}:{curr_pos + block_size_clamped})")
+        print(f"   ⚡ EFFICIENT: One forward pass, no iterative refinement, no regeneration!")
+        
+        # Step 3: Generate this block incrementally (no regeneration!)
+        # steps_per_block=1 is hard-coded inside generate_block_incremental
+        x, features_out = generate_block_incremental(
+            model=model,
+            x=x,
+            block_start=curr_pos,
+            block_size=block_size_clamped,
+            temperature=temperature,
+            cfg_scale=cfg_scale,
+            remasking=remasking,
+            mask_id=mask_id,
+            prompt_length=prompt_length,
+            return_features=True
+        )
+        
+        # Step 4: Extract and store features (simplified - would need full feature extraction)
+        # For now, just placeholder
+        if features_out['confidences']:
+            confidence_list.append(features_out['confidences'][0])
+        if features_out['entropies']:
+            entropy_list.append(features_out['entropies'][0])
+        
+        # Step 5: Move to next position
+        predicted_block_sizes.append(block_size_clamped)
+        curr_pos += block_size_clamped
+        num_steps += 1
+        
+        print(f"   ✅ Generated up to position {curr_pos}")
+    
+    speedup = gen_length / num_steps if num_steps > 0 else 1.0
+    print(f"\n✅ Generation complete!")
+    print(f"   Total decoding steps: {num_steps} (vs {gen_length} for pure AR)")
+    print(f"   Speedup: {speedup:.2f}x")
+    print(f"   Block sizes: {predicted_block_sizes}")
+    
+    return x, predicted_block_sizes, num_steps
+
 
 def run_inference_batch_with_scheduler(model, tokenizer, device, scheduler, model_args,
                                         input_csv_path, output_csv_path,

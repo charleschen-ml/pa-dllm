@@ -58,124 +58,6 @@ def get_num_transfer_tokens(mask_index, steps):
 
     return num_transfer_tokens
 
-# @ torch.no_grad()
-# def generate(model, tokenizer, prompt, steps=128, gen_length=128, block_length=128, temperature=0.,
-#              cfg_scale=0., remasking='low_confidence', mask_id=126336):
-#     '''
-#     Args:
-#         model: Mask predictor.
-#         prompt: A tensor of shape (1, L).
-#         steps: Sampling steps, less than or equal to gen_length.
-#         gen_length: Generated answer length.
-#         block_length: Block length, less than or equal to gen_length. If less than gen_length, it means using semi_autoregressive remasking.
-#         temperature: Categorical distribution sampling temperature.
-#         cfg_scale: Unsupervised classifier-free guidance scale.
-#         remasking: Remasking strategy. 'low_confidence' or 'random'.
-#         mask_id: The toke id of [MASK] is 126336.
-#     '''
-
-#     # Create x = prompt + completion 
-#     x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(model.device)
-#     x[:, :prompt.shape[1]] = prompt.clone() # initialize prompt, while leaving completion tokens as <mask>
-
-#     prompt_index = (x != mask_id) # create boolean mask with prompt = T, completion = F
-#                                 # e.g. [T, T, T, ..., F, F, F, ...]
-#                                 # used later if cfg enabled
-
-#     assert gen_length % block_length == 0
-#     num_blocks = gen_length // block_length
-
-#     assert steps % num_blocks == 0
-#     steps = steps // num_blocks # convert total_steps to steps_per_block
-
-#     first_correct_step = None  # Track first step with correct answer
-#     for num_block in range(num_blocks):
-
-#         # initialize boolean mask to all <mask> in current block
-#         block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:] == mask_id)
-
-#         # calculate number of tokens to unmask at each step
-#         num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
-
-#         for i in range(steps):
-#             total_step = num_block * steps + i + 1 # total steps as efficiency metric
-            
-#             mask_index = (x == mask_id) # update the boolean mask (since last step)
-#             if cfg_scale > 0.:
-#                 un_x = x.clone()
-#                 un_x[prompt_index] = mask_id
-#                 x_ = torch.cat([x, un_x], dim=0)
-#                 logits = model(x_).logits
-#                 logits, un_logits = torch.chunk(logits, 2, dim=0)
-#                 logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
-#             else:
-#                 logits = model(x).logits # get logits with current x
-
-#             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
-#             x0 = torch.argmax(logits_with_noise, dim=-1) # get index of token with highest logit at each position
-
-#             if remasking == 'low_confidence':
-#                 p = F.softmax(logits, dim=-1) # convert logits to probs
-                
-#                 # extract prob at each position with highest logit
-#                 x0_p = torch.squeeze( 
-#                     torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
-#             elif remasking == 'random':
-#                 x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
-#             else:
-#                 raise NotImplementedError(remasking)
-
-#             # mask out tokens beyond the current block
-#             x0_p[:, prompt.shape[1] + (num_block + 1) * block_length:] = -np.inf
-
-#             # torch.where(mask, tensor_A, tensor_B): if mask_index is True, use tensor A, otherwise use tensor B
-#             # if token is true (masked), use x0 (token index with highest logit)
-#             # otherwise use x (original token)
-#             x0 = torch.where(mask_index, x0, x)
-#             confidence = torch.where(mask_index, x0_p, -np.inf)
-
-#             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-#             for j in range(confidence.shape[0]): # loop through each batch
-#                 # torch.topk(input, k): selects the top k tokens from "input" (list)
-#                 # returns (values, indices)
-#                 _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
-                
-#                 # use "advanced indexing" to set all indices in select_index
-#                 # equivalent to saying:
-#                 # for index in select_index:
-#                 #   transfer_index[j, index] = True
-#                 transfer_index[j, select_index] = True
-
-#             # unmask (freeze) the tokens in x (also using advanced indexing)
-#             x[transfer_index] = x0[transfer_index]
-            
-#             # Store confidence for this block if this is the last step of the block
-#             if i == steps_per_block - 1:  # Last step of this block
-
-#                 block_confidence = []
-#                 for j in range(block_size):
-#                     token_pos = prompt.shape[1] + block_start + j
-#                     if token_pos < confidence.shape[1]:
-#                         conf_val = confidence[0, token_pos].item()
-
-#                         if conf_val != -np.inf:  # Only include non-masked tokens
-#                             block_confidence.append(conf_val)
-
-#                 if block_confidence:
-#                     block_confidences[num_block] = block_confidence
-
-
-#             # check answer correct
-#             out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
-#             print("\n" + out_text)
-#             is_correct = extract_numerical(out_text) == 72
-#             if is_correct and first_correct_step is None:
-#                 first_correct_step = total_step
-#             print(f"{'✅' if is_correct else '❌'} | step: {total_step}")
-
-#     print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else 'Never'}")
-#     return x
-
 @torch.no_grad()
 def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_length=128, temperature=0.,
                      cfg_scale=0., remasking='low_confidence', mask_id=126336, expected_answer=None):
@@ -275,6 +157,117 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
             # print intermediate outputs
             # out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
             # print("\n" + out_text)
+        
+    # print final output
+    # out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
+    # print("\n" + out_text)
+
+    return x
+
+@torch.no_grad()
+def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_length=128, block_length=128, 
+                     temperature=0., cfg_scale=0., remasking='low_confidence', mask_id=126336, 
+                     expected_answer=None, use_regression=True):
+    '''
+    Dynamic block size generation using XGBoost scheduler.
+    
+    Args:
+        model: Mask predictor.
+        tokenizer: Tokenizer for decoding outputs.
+        prompt: A tensor of shape (1, L).
+        scheduler: Trained XGBoost model for predicting block sizes. If None, uses fixed block_length.
+        steps: Sampling steps (not used in dynamic version, kept for compatibility).
+        gen_length: Generated answer length.
+        block_length: Default block length if scheduler is None.
+        temperature: Categorical distribution sampling temperature.
+        cfg_scale: Unsupervised classifier-free guidance scale.
+        remasking: Remasking strategy. 'low_confidence' or 'random'.
+        mask_id: The token id of [MASK] is 126336.
+        expected_answer: Optional, if set will compare against `extract_numerical()` for correctness logging.
+        use_regression: If True, scheduler is regression model; else classification.
+    '''
+
+    # Create x = prompt + completion 
+    x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(model.device)
+    x[:, :prompt.shape[1]] = prompt.clone()  # initialize prompt, while leaving completion tokens as <mask>
+    
+    # Debug: Show prompt information
+    prompt_text = tokenizer.batch_decode(prompt, skip_special_tokens=True)[0]
+    print(f"\n{'='*80}")
+    print(f"🎬 STARTING GENERATION")
+    print(f"{'='*80}")
+    print(f"📝 Prompt length: {prompt.shape[1]} tokens")
+    print(f"📝 Prompt token IDs (first 20): {prompt[0, :20].tolist()}")
+    print(f"📝 Prompt token IDs (last 20): {prompt[0, -20:].tolist()}")
+    print(f"📝 Prompt text:\n{prompt_text}")
+    print(f"\n🎯 Generation settings:")
+    print(f"   - gen_length: {gen_length} tokens")
+    print(f"   - mask_id: {mask_id}")
+    print(f"   - Scheduler: {'XGBoost' if scheduler is not None else 'Fixed block size'}")
+    print(f"{'='*80}\n")
+
+    prompt_index = (x != mask_id)  # create boolean mask with prompt = T, completion = F
+                                   # e.g. [T, T, T, ..., F, F, F, ...]
+                                   # used later if cfg enabled
+
+    # Track current position and features for XGBoost
+    curr_pos = 0
+
+    while curr_pos < gen_length:  # loop until we reach gen_length
+        # Get current generation region
+        gen_start = prompt.shape[1]
+        gen_end = gen_start + gen_length
+
+        # print the size of x and decoded x
+        print(f"The size of x: {x.shape}")
+        decoded_x = tokenizer.batch_decode(x, skip_special_tokens=False)[0]
+        print(f"The decoded x: {decoded_x}")
+
+        # Get logits for current state
+        if cfg_scale > 0.:
+            un_x = x.clone()
+            un_x[prompt_index] = mask_id
+            x_ = torch.cat([x, un_x], dim=0)
+            logits = model(x_).logits
+            logits, un_logits = torch.chunk(logits, 2, dim=0)
+            logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+        else:
+            logits = model(x).logits  # get logits with current x
+        
+        # Generate tokens for current block (semi-AR: unmask next N tokens left-to-right)
+        # Use the predicted tokens with added noise for sampling
+        logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
+        x0 = torch.argmax(logits_with_noise, dim=-1)
+
+        block_size = 1 # hardcode for debugging
+        
+        # Semi-autoregressive approach: Unmask the NEXT block_size tokens sequentially
+        # (not top-confidence tokens, but next N positions from left to right)
+        block_abs_start = gen_start + curr_pos
+        block_abs_end = block_abs_start + block_size
+        
+        # Debug: Show mask state before unmasking
+        # mask_index = (x == mask_id)
+        
+        # Replace only the next block_size positions with predicted tokens
+        # torch.where(mask, tensor_A, tensor_B): if mask is True, use A, otherwise use B
+        # x0_masked = torch.where(mask_index, x0, x)  # Use predictions only for masked positions
+        x[:, block_abs_start:block_abs_end] = x0[:, block_abs_start:block_abs_end]  # Unmask next block
+        
+        # Move to next block
+        curr_pos += block_size
+
+        # Print intermediate outputs for debugging
+        out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
+        print(f"\n{'='*80}")
+        print(f"🔄 Step: Position {curr_pos-block_size} → {curr_pos}/{gen_length}")
+        print(f"📊 Predicted block_size: {block_size} tokens")
+        print(f"📝 Current generation:\n{out_text}")
+        
+        # Show what tokens were just unmasked
+        newly_unmasked = x[:, block_abs_start:block_abs_end]
+        newly_unmasked_text = tokenizer.batch_decode(newly_unmasked, skip_special_tokens=True)[0]
+        print(f"🆕 Newly unmasked tokens: '{newly_unmasked_text}'")
         
     # print final output
     # out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
@@ -670,6 +663,238 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
 
     # block_confidences: Final confidence scores for tokens that were actually decoded in each block
     return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features, initial_shannon_entropy
+
+
+@torch.no_grad()
+def generate_block_incremental(model, x, block_start, block_size, 
+                                temperature=0., cfg_scale=0., remasking='low_confidence', 
+                                mask_id=126336, prompt_length=0, return_features=False):
+    """
+    Generate a single block incrementally without regenerating previous tokens.
+    
+    KEY DIFFERENCE VS generate_vanilla:
+    - generate_vanilla: Creates x from scratch, generates ALL blocks in one call
+    - generate_block_incremental: Takes EXISTING x, generates ONLY ONE block
+    
+    EFFICIENCY:
+    - Called once per block (e.g., 5 times for [1, 7, 8, 8, 8])
+    - Each call only processes ONE block, not all 32 tokens
+    - Previously generated tokens are PRESERVED, not regenerated
+    - Hard-coded to steps_per_block=1 (decode all tokens in one shot, no iterative refinement)
+    
+    Args:
+        model: Mask predictor model
+        x: Current state [1, prompt_length + gen_length] with some tokens already unmasked
+           CRITICAL: This is the SHARED state across all blocks!
+           - On 1st call: x has prompt + 32 masked tokens
+           - On 2nd call: x has prompt + N unmasked + (32-N) masked tokens (from previous call)
+           - On 3rd call: x has prompt + M unmasked + (32-M) masked tokens (from previous calls)
+           - etc.
+        block_start: Starting position of this block (relative to completion, not prompt)
+                     e.g., 0, 3, 8, 16, 24 for schedule [3, 5, 8, 8, 8]
+        block_size: Number of tokens to generate in this block (determined by XGBoost)
+                    e.g., 3, 5, 8, 8, 8 for schedule [3, 5, 8, 8, 8]
+        temperature: Sampling temperature
+        cfg_scale: Classifier-free guidance scale
+        remasking: 'low_confidence' or 'random'
+        mask_id: Token ID for [MASK] (126336)
+        prompt_length: Length of the prompt (to know where completion starts)
+        return_features: If True, return confidence/entropy features
+        
+    Returns:
+        x: Updated tensor with this block generated (MODIFIED IN-PLACE via torch.where)
+        features: Dict with confidence/entropy if return_features=True
+    """
+    prompt_index = torch.arange(prompt_length, device=x.device) if cfg_scale > 0 else None
+    
+    # ============================================================================
+    # SETUP: Define block boundaries in absolute tensor indexing
+    # ============================================================================
+    # Example: If prompt_length=100, block_start=8, block_size=8
+    #   block_abs_start = 108 (start of this block in full tensor)
+    #   block_abs_end = 116 (end of this block in full tensor)
+    block_abs_start = prompt_length + block_start
+    block_abs_end = prompt_length + block_start + block_size
+    
+    # DIFFERENCE: generate_vanilla calculates this inside a loop over ALL blocks.
+    # Here, we only care about ONE block (the current one).
+    
+    # ============================================================================
+    # EFFICIENCY KEY #1: Only mask for CURRENT block
+    # ============================================================================
+    # Check which tokens in THIS BLOCK are still masked
+    # Previously generated blocks (positions < block_start) are already unmasked!
+    block_mask_index = (x[:, block_abs_start:block_abs_end] == mask_id)
+    
+    # DIFFERENCE: generate_vanilla processes block_mask_index for each block sequentially.
+    # Here, blocks before block_start are ALREADY done (unmasked in previous calls).
+    
+    # ============================================================================
+    # SCHEDULER-GUIDED APPROACH: Unmask all tokens in ONE SHOT (steps_per_block=1)
+    # ============================================================================
+    # Since XGBoost already determined we should generate block_size tokens,
+    # we decode ALL of them in one forward pass (no iterative refinement)
+    #
+    # DIFFERENCE from generate_vanilla's confidence-based unmasking:
+    # - generate_vanilla: Uses get_num_transfer_tokens() to gradually unmask by confidence
+    # - generate_block_incremental: XGBoost decided block_size, decode all at once
+    #
+    # Hard-coded: steps_per_block=1 (decode all tokens in block in one shot)
+    steps_per_block = 1
+    num_transfer_tokens = block_size  # Unmask all block_size tokens in one step
+    
+    # Storage for features (if requested)
+    confidences = [] if return_features else None
+    entropies = [] if return_features else None
+    
+    # ============================================================================
+    # SINGLE-SHOT DECODING: Unmask all tokens in this block at once
+    # ============================================================================
+    # Only one iteration since steps_per_block=1
+    for i in range(steps_per_block):
+        # ========================================================================
+        # EFFICIENCY KEY #2: mask_index checks ALL tokens, but previously 
+        # unmasked tokens will stay unmasked due to torch.where() below
+        # ========================================================================
+        mask_index = (x == mask_id)  # Boolean tensor: True = still masked
+        
+        # SAME AS generate_vanilla: Get logits from model
+        if cfg_scale > 0.:
+            un_x = x.clone()
+            un_x[:, :prompt_length] = mask_id
+            x_ = torch.cat([x, un_x], dim=0)
+            logits = model(x_).logits
+            logits, un_logits = torch.chunk(logits, 2, dim=0)
+            logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+        else:
+            logits = model(x).logits  # Forward pass through model
+        
+        # SAME AS generate_vanilla: Get predicted tokens
+        logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
+        x0 = torch.argmax(logits_with_noise, dim=-1)  # Predicted tokens at each position
+        
+        # SAME AS generate_vanilla: Get confidence scores for remasking
+        if remasking == 'low_confidence':
+            p = F.softmax(logits, dim=-1)
+            x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1)
+        elif remasking == 'random':
+            x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+        else:
+            raise NotImplementedError(remasking)
+        
+        # ========================================================================
+        # EFFICIENCY KEY #3: Mask out tokens BEYOND current block
+        # ========================================================================
+        # Set confidence to -inf for positions >= block_abs_end
+        # This ensures we ONLY unmask tokens in the CURRENT block
+        x0_p[:, block_abs_end:] = -np.inf
+        
+        # DIFFERENCE: generate_vanilla uses:
+        #   x0_p[:, prompt.shape[1] + (num_block + 1) * block_length:] = -np.inf
+        # which masks out future blocks. Here we do the same but for only ONE block.
+        
+        # ========================================================================
+        # EFFICIENCY KEY #4: Preserve already-unmasked tokens
+        # ========================================================================
+        # x0 = torch.where(mask_index, x0, x)
+        # Translation: For each position:
+        #   - If mask_index[pos] == True (still masked): use x0[pos] (new prediction)
+        #   - If mask_index[pos] == False (already unmasked): use x[pos] (keep old value)
+        # 
+        # This is HOW we avoid regeneration!
+        # Tokens from previous blocks are already unmasked, so they get preserved here.
+        x0 = torch.where(mask_index, x0, x)
+        confidence = torch.where(mask_index, x0_p, -np.inf)
+        
+        # ========================================================================
+        # HYBRID APPROACH: XGBoost determines HOW MANY, confidence determines WHICH
+        # ========================================================================
+        # - XGBoost decided block_size (e.g., 7 tokens) → decode all 7 at once
+        # - Confidence decides WHICH of those 7 tokens to unmask (highest confidence first)
+        # This combines XGBoost's high-level scheduling with the model's token-level confidence
+        transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+        for j in range(confidence.shape[0]):
+            # Since steps_per_block=1, we unmask all num_transfer_tokens in this one step
+            _, select_index = torch.topk(confidence[j], k=num_transfer_tokens)
+            transfer_index[j, select_index] = True
+        
+        # ========================================================================
+        # EFFICIENCY KEY #5: Unmask selected tokens IN-PLACE (modifies x directly)
+        # ========================================================================
+        # This MODIFIES the input tensor x!
+        # After this line, x contains newly unmasked tokens from this refinement step
+        x[transfer_index] = x0[transfer_index]
+        
+        # SAME AS generate_vanilla, but crucial difference:
+        # In generate_vanilla, x is local to the function
+        # Here, x is SHARED across all calls to generate_block_incremental!
+        # So this modification PERSISTS to the next call.
+        
+        # Store features if requested
+        if return_features:
+            # Get confidence/entropy for the first token in this block
+            if i == 0 and block_start < x.shape[1] - prompt_length:
+                token_pos = block_abs_start
+                conf = x0_p[0, token_pos].item()
+                # Calculate entropy
+                probs = F.softmax(logits[0, token_pos], dim=-1)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-12)).item()
+                confidences.append(conf)
+                entropies.append(entropy)
+    
+    # ============================================================================
+    # RETURN: x is modified in-place, so caller gets updated state
+    # ============================================================================
+    if return_features:
+        return x, {'confidences': confidences, 'entropies': entropies}
+    return x
+
+
+# ============================================================================
+# VISUAL EXAMPLE: How generate_block_incremental avoids regeneration
+# ============================================================================
+# 
+# XGBoost predicted schedule: [3, 5, 8, 8, 8] for gen_length=32
+# steps_per_block=1 (HARD-CODED: decode all tokens in block at once)
+# 
+# Call 1: generate_block_incremental(x, block_start=0, block_size=3)
+#   Input:  x = [prompt, M, M, M, M, M, M, M, M, M, M, M, M, ...]  (M = masked)
+#   Process: 
+#     - One forward pass through model
+#     - Unmask 3 highest-confidence tokens in positions [0, 3) in ONE SHOT
+#     - Since XGBoost said "generate 3 tokens", we unmask exactly 3
+#   Output: x = [prompt, 5, 2, 7, M, M, M, M, M, M, M, M, M, ...]
+#           ^ Tokens at positions 0-2 unmasked
+# 
+# Call 2: generate_block_incremental(x, block_start=3, block_size=5)
+#   Input:  x = [prompt, 5, 2, 7, M, M, M, M, M, M, M, M, M, ...]
+#           ^ Positions 0-2 ALREADY unmasked from Call 1!
+#   Process: 
+#     - One forward pass through model
+#     - Unmask 5 highest-confidence tokens in positions [3, 8) in ONE SHOT
+#     - mask_index[0:3] = False (already unmasked) → positions 0-2 preserved!
+#     - x0 = torch.where(mask_index, x0, x)  # Keeps positions 0-2 unchanged!
+#   Output: x = [prompt, 5, 2, 7, 1, 9, 4, 3, 2, M, M, M, M, ...]
+#           ^ Positions 0-7 now unmasked, positions 0-2 NOT regenerated
+# 
+# Call 3: generate_block_incremental(x, block_start=8, block_size=8)
+#   Input:  x = [prompt, 5, 2, 7, 1, 9, 4, 3, 2, M, M, M, M, ...]
+#           ^ Positions 0-7 ALREADY unmasked from Calls 1-2!
+#   Process:
+#     - One forward pass through model
+#     - Unmask 8 highest-confidence tokens in positions [8, 16) in ONE SHOT
+#     - mask_index[0:8] = False (already unmasked) → positions 0-7 preserved!
+#   Output: x = [prompt, 5, 2, 7, 1, 9, 4, 3, 2, 8, 1, 4, 2, 9, 7, 3, M, ...]
+#           ^ Positions 0-15 now unmasked, positions 0-7 NOT regenerated
+# 
+# ... and so on for remaining blocks
+# 
+# KEY INSIGHTS: 
+# - XGBoost determines block_size → we unmask exactly that many tokens
+# - steps_per_block=1 → decode all tokens in block with ONE forward pass (no refinement)
+# - Much more efficient than generate_vanilla's iterative confidence-based refinement
+# ============================================================================
+
 
 def main():
     device = 'cuda'

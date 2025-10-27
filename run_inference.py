@@ -21,8 +21,7 @@ importlib.reload(inference)
 # Load inference functions
 from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference, generate_one_sample
 from inference import augment_one_sample, load_gsm8k, augment_multiple_samples
-from inference import augment_one_sample_batch
-from generate import generate_vanilla, generate_custom
+from generate import generate_vanilla, generate_custom, generate_charles
 
 # FASTEST: Load model weights and recreate architecture
 print("Loading saved model (fast method)...")
@@ -77,7 +76,6 @@ if __name__ == '__main__':
             model_args.model_name_or_path,
             trust_remote_code=model_args.trust_remote_code,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
             low_cpu_mem_usage=True
         )
         print("✅ Model architecture loaded")
@@ -87,7 +85,7 @@ if __name__ == '__main__':
         state_dict = torch.load('./cache/model_weights.pt', weights_only=True, map_location='cpu')
         model.load_state_dict(state_dict)
 
-        # Now move to GPU
+        # Now move to GPU (removed device_map="auto" to avoid multi-GPU distribution)
         model = model.to(device).eval()
         print("✅ Model loaded from saved weights (fast)")
 
@@ -203,29 +201,6 @@ if __name__ == '__main__':
     # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
 
     ########################################################
-    # Augment one sample (BATCHED)
-    ########################################################
-    # print("🚀 Starting augment_multiple_samples...")
-    # start_time = time.time()
-    # training_samples_batch = augment_one_sample_batch(
-    #     model=model,
-    #     tokenizer=tokenizer,
-    #     device=device,
-    #     prompt=prompt,
-    #     model_args=model_args,
-    #     gen_length=32,
-    #     base_block_length=1,
-    #     steps=32,
-    #     correct_answer=correct_answer,
-    #     break_after_answer_found=True
-    # )
-    # end_time = time.time()
-    # elapsed_time = end_time - start_time
-    # print(f"🚀 Batch augmentation produced {len(training_samples_batch)} samples")
-    # print(f"\n⏱️  TIMING REPORT:")
-    # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
-
-    ########################################################
     # Augment multiple samples: Sequential or Parallel
     ########################################################
     # start_time = time.time()
@@ -288,59 +263,147 @@ if __name__ == '__main__':
     ########################################################
     # Run inference with XGBoost scheduler (FAST ADAPTIVE INFERENCE)
     ########################################################
+    # print("="*80)
+    # print("🚀 XGBOOST SCHEDULER-GUIDED INFERENCE")
+    # print("="*80)
+    
+    # # Load scheduler functions
+    # from inference import load_scheduler, run_inference_batch_with_scheduler
+    
+    # # Configuration
+    # SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model
+    # USE_REGRESSION = True  # True for regression, False for classification
+    # INPUT_CSV = "./data/gsm8k_correct.csv"  # Input questions
+    # # INPUT_CSV = "./data/gsm8k.csv"  # Input questions
+    # OUTPUT_CSV = "./output/predictions_with_scheduler.csv"  # Output predictions
+    
+    # # Generation settings
+    # GEN_LENGTH = 32
+    # BASE_BLOCK_LENGTH = 1
+    # STEPS = 32
+    
+    # # Load scheduler
+    # scheduler = load_scheduler(SCHEDULER_PATH, use_regression=USE_REGRESSION)
+    
+    # print(f"\n{'='*80}")
+    # print("📊 INFERENCE SETTINGS")
+    # print(f"{'='*80}")
+    # print(f"  Input:  {INPUT_CSV}")
+    # print(f"  Output: {OUTPUT_CSV}")
+    # print(f"  Scheduler: {'Regression' if USE_REGRESSION else 'Classification'}")
+    # print(f"  Generation: gen_length={GEN_LENGTH}, steps={STEPS}")
+    # print(f"{'='*80}\n")
+    
+    # # Run inference
+    # start_time = time.time()
+    # results_df = run_inference_batch_with_scheduler(
+    #     model=model,
+    #     tokenizer=tokenizer,
+    #     device=device,
+    #     scheduler=scheduler,
+    #     model_args=model_args,
+    #     input_csv_path=INPUT_CSV,
+    #     output_csv_path=OUTPUT_CSV,
+    #     steps=STEPS,
+    #     gen_length=GEN_LENGTH,
+    #     base_block_length=BASE_BLOCK_LENGTH,
+    #     use_regression=USE_REGRESSION,
+    #     instruction=instruction
+    # )
+    # end_time = time.time()
+    # elapsed_time = end_time - start_time
+    
+    # print(f"\n{'='*80}")
+    # print("✅ INFERENCE COMPLETE!")
+    # print(f"{'='*80}")
+    # print(f"\n⏱️  TIMING REPORT:")
+    # print(f"  📊 Questions processed: {len(results_df)}")
+    # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+    # print(f"  ⚡ Time per question: {elapsed_time/len(results_df):.2f} seconds")
+
+    ########################################################
+    # Run inference with XGBoost scheduler (CHARLES)
+    ########################################################
     print("="*80)
-    print("🚀 XGBOOST SCHEDULER-GUIDED INFERENCE")
+    print("🚀 CHARLES: XGBoost-Guided Dynamic Block Size Inference")
     print("="*80)
     
-    # Load scheduler functions
-    from inference import load_scheduler, run_inference_batch_with_scheduler
-    
-    # Configuration
+    # Load XGBoost scheduler
+    import xgboost as xgb
     SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model
     USE_REGRESSION = True  # True for regression, False for classification
-    INPUT_CSV = "./data/gsm8k_correct.csv"  # Input questions
-    OUTPUT_CSV = "./output/predictions_with_scheduler.csv"  # Output predictions
+    
+    print(f"📥 Loading XGBoost scheduler from: {SCHEDULER_PATH}")
+    scheduler = xgb.XGBRegressor() if USE_REGRESSION else xgb.XGBClassifier()
+    scheduler.load_model(SCHEDULER_PATH)
+    print(f"✅ Scheduler loaded ({'Regression' if USE_REGRESSION else 'Classification'} model)")
     
     # Generation settings
     GEN_LENGTH = 32
-    BASE_BLOCK_LENGTH = 1
-    STEPS = 32
-    
-    # Load scheduler
-    scheduler = load_scheduler(SCHEDULER_PATH, use_regression=USE_REGRESSION)
+    STEPS = 32  # Not used in dynamic version, kept for compatibility
+    TEMPERATURE = 0.
+    CFG_SCALE = 0.
+    REMASKING = 'low_confidence'
     
     print(f"\n{'='*80}")
-    print("📊 INFERENCE SETTINGS")
+    print("📊 GENERATION SETTINGS")
     print(f"{'='*80}")
-    print(f"  Input:  {INPUT_CSV}")
-    print(f"  Output: {OUTPUT_CSV}")
-    print(f"  Scheduler: {'Regression' if USE_REGRESSION else 'Classification'}")
-    print(f"  Generation: gen_length={GEN_LENGTH}, steps={STEPS}")
+    print(f"  Generation length: {GEN_LENGTH}")
+    print(f"  Temperature: {TEMPERATURE}")
+    print(f"  CFG scale: {CFG_SCALE}")
+    print(f"  Remasking: {REMASKING}")
+    print(f"  Expected answer: {correct_answer}")
     print(f"{'='*80}\n")
     
-    # Run inference
+    print(f"📝 Question: {prompt}\n")
+    
+    # Tokenize prompt
+    input_ids = tokenizer(prompt)['input_ids']
+    input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
+    
+    # Run generation with XGBoost scheduler
+    print("🎯 Starting dynamic block size generation...")
     start_time = time.time()
-    results_df = run_inference_batch_with_scheduler(
+    
+    out = generate_charles(
         model=model,
         tokenizer=tokenizer,
-        device=device,
+        prompt=input_ids,
         scheduler=scheduler,
-        model_args=model_args,
-        input_csv_path=INPUT_CSV,
-        output_csv_path=OUTPUT_CSV,
         steps=STEPS,
         gen_length=GEN_LENGTH,
-        base_block_length=BASE_BLOCK_LENGTH,
-        use_regression=USE_REGRESSION,
-        instruction=instruction
+        block_length=1,  # Fallback if scheduler is None
+        temperature=TEMPERATURE,
+        cfg_scale=CFG_SCALE,
+        remasking=REMASKING,
+        expected_answer=correct_answer,
+        use_regression=USE_REGRESSION
     )
+    
     end_time = time.time()
     elapsed_time = end_time - start_time
     
+    # Decode output
+    generated_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+    
     print(f"\n{'='*80}")
-    print("✅ INFERENCE COMPLETE!")
+    print("✅ GENERATION COMPLETE!")
     print(f"{'='*80}")
-    print(f"\n⏱️  TIMING REPORT:")
-    print(f"  📊 Questions processed: {len(results_df)}")
-    print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
-    print(f"  ⚡ Time per question: {elapsed_time/len(results_df):.2f} seconds")
+    print(f"\n📄 Generated Answer:\n{generated_text}")
+    
+    # Extract numerical answer
+    from generate import extract_numerical
+    predicted_answer = extract_numerical(generated_text)
+    is_correct = (predicted_answer == correct_answer) if predicted_answer is not None else False
+    
+    print(f"\n{'='*80}")
+    print("📊 RESULTS")
+    print(f"{'='*80}")
+    print(f"  Expected answer: {correct_answer}")
+    print(f"  Predicted answer: {predicted_answer}")
+    print(f"  Correct: {'✅ YES' if is_correct else '❌ NO'}")
+    print(f"\n⏱️  Generation time: {elapsed_time:.2f} seconds")
+    print(f"  Tokens generated: {GEN_LENGTH}")
+    print(f"  Tokens per second: {GEN_LENGTH/elapsed_time:.2f}")
+    print(f"{'='*80}\n")
+
