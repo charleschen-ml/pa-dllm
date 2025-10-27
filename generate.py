@@ -275,6 +275,143 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
 
     return x
 
+
+def _entropy(v: float) -> float:
+    """Calculate self-information entropy for a single confidence value."""
+    return round(-float(v) * float(np.log(max(v, 1e-12))), 4)
+
+
+def _shannon_entropy(probs: torch.Tensor) -> float:
+    """Calculate Shannon entropy over full probability distribution."""
+    # Ensure probabilities are positive and normalized
+    probs = torch.clamp(probs, min=1e-12)
+    probs = probs / probs.sum()  # Normalize just in case
+    entropy = -torch.sum(probs * torch.log(probs))
+    return round(float(entropy), 4)
+
+
+def extract_features(logits, x, gen_start, gen_length, tokenizer=None, verbose=False, curr_pos=None):
+    """
+    Extract confidence, entropy, and 30 additional features from logits.
+    
+    Args:
+        logits: Model logits [batch_size, seq_len, vocab_size]
+        x: Current sequence tensor [batch_size, seq_len] (for AR context)
+        gen_start: Starting position of generation region
+        gen_length: Length of generation region
+        tokenizer: Optional tokenizer for verbose printing
+        verbose: If True, print feature extraction details
+        curr_pos: Optional current position for verbose printing
+        
+    Returns:
+        Tuple of (initial_confidence, initial_entropy, initial_shannon_entropy, 
+                  additional_features, ar_context_tokens)
+    """
+    gen_end = gen_start + gen_length
+    
+    # CAPTURE TOP-1 TOKENS after AR context is built
+    if verbose and curr_pos is not None:
+        print(f"🔍 CAPTURING top-1 tokens after AR context (blocks 0 to {curr_pos-1} processed)")
+    
+    top1_tokens = torch.argmax(logits, dim=-1)  # Get top-1 predictions for all positions
+    ar_context_tokens = x.clone()  # Start with current state (AR context + masks)
+    ar_context_tokens[0, gen_start:gen_end] = top1_tokens[0, gen_start:gen_end]  # Fill with top-1 predictions
+    
+    if verbose and tokenizer is not None:
+        ar_tokens_text = tokenizer.decode(ar_context_tokens[0, gen_start:gen_end], skip_special_tokens=True)
+        print(f"📝 AR context + top-1 predictions: '{ar_tokens_text}'")
+    
+    # Calculate comprehensive confidence metrics
+    p = F.softmax(logits, dim=-1)  # Full softmax probabilities
+    gen_logits = logits[0, gen_start:gen_end]  # Logits for generation positions only
+    gen_probs = p[0, gen_start:gen_end]  # Probabilities for generation positions only
+    
+    # Basic confidence and entropy
+    initial_conf = torch.squeeze(
+        torch.gather(gen_probs, dim=-1, index=torch.unsqueeze(torch.argmax(gen_logits, dim=-1), -1)), -1
+    )
+    
+    initial_confidence = [round(float(initial_conf[i]), 4) for i in range(gen_length)]
+    initial_entropy = [_entropy(float(initial_conf[i])) for i in range(gen_length)]
+    initial_shannon_entropy = [_shannon_entropy(gen_probs[i]) for i in range(gen_length)]
+    
+    # Calculate additional features for each position
+    additional_features = {}
+    
+    for pos in range(gen_length):
+        pos_probs = gen_probs[pos]  # Probabilities for this position
+        
+        # Basic features
+        conf_0 = float(initial_conf[pos])  # Confidence of next token
+        entropy_0 = initial_entropy[pos]  # Entropy of next token (self-information)
+        shannon_entropy_0 = initial_shannon_entropy[pos]  # Shannon entropy of full distribution
+        
+        # Top1 margin (difference between top-1 and top-2)
+        pos_top_probs, _ = torch.topk(pos_probs, k=min(2, pos_probs.shape[0]))
+        if len(pos_top_probs) >= 2:
+            top1_margin = float(pos_top_probs[0] - pos_top_probs[1])
+        else:
+            top1_margin = float(pos_top_probs[0])  # Only one token available
+        
+        # Global features (mean/std across remaining tokens from current position)
+        remaining_conf = initial_confidence[pos:]
+        remaining_entropy = initial_entropy[pos:]
+        remaining_shannon_entropy = initial_shannon_entropy[pos:]
+        
+        mean_confidence = float(np.mean(remaining_conf)) if remaining_conf else 0.0
+        mean_entropy = float(np.mean(remaining_entropy)) if remaining_entropy else 0.0
+        shannon_mean_entropy = float(np.mean(remaining_shannon_entropy)) if remaining_shannon_entropy else 0.0
+        conf_std = float(np.std(remaining_conf)) if len(remaining_conf) > 1 else 0.0
+        entropy_std = float(np.std(remaining_entropy)) if len(remaining_entropy) > 1 else 0.0
+        shannon_entropy_std = float(np.std(remaining_shannon_entropy)) if len(remaining_shannon_entropy) > 1 else 0.0
+        
+        # Specific position features
+        conf_1 = remaining_conf[1] if len(remaining_conf) > 1 else 0.0  # 2nd token confidence
+        
+        # Top-K vs Sequential features
+        remaining_tensor = torch.tensor(remaining_conf)
+        
+        # Top4/8 confidence minimums (best 4/8 tokens regardless of position)
+        top4_values, _ = torch.topk(remaining_tensor, k=min(4, len(remaining_tensor)), largest=True)
+        top8_values, _ = torch.topk(remaining_tensor, k=min(8, len(remaining_tensor)), largest=True)
+        top4_conf_min = float(top4_values[-1]) if len(top4_values) > 0 else 0.0  # Minimum of top 4
+        top8_conf_min = float(top8_values[-1]) if len(top8_values) > 0 else 0.0  # Minimum of top 8
+        
+        # Next4/8 confidence minimums (immediate next 4/8 sequential tokens)
+        next4_conf = remaining_conf[:4]  # Next 4 sequential tokens
+        next8_conf = remaining_conf[:8]  # Next 8 sequential tokens
+        next4_conf_min = float(min(next4_conf)) if next4_conf else 0.0
+        next8_conf_min = float(min(next8_conf)) if next8_conf else 0.0
+        
+        # Store all features for this position
+        additional_features[pos] = {
+            'conf_0': conf_0,
+            'entropy_0': entropy_0,
+            'shannon_entropy_0': shannon_entropy_0,
+            'top1_margin': top1_margin,
+            'mean_confidence': mean_confidence,
+            'mean_entropy': mean_entropy,
+            'shannon_mean_entropy': shannon_mean_entropy,
+            'conf_std': conf_std,
+            'entropy_std': entropy_std,
+            'shannon_entropy_std': shannon_entropy_std,
+            'conf_1': conf_1,
+            'top4_conf_min': top4_conf_min,
+            'next4_conf_min': next4_conf_min,
+            'top8_conf_min': top8_conf_min,
+            'next8_conf_min': next8_conf_min,
+        }
+    
+    # Show sample of captured values
+    if verbose:
+        print(f"📊 Sample confidence values: {initial_confidence[:5]}...")
+        print(f"📈 Sample entropy values: {initial_entropy[:5]}...")
+        print(f"✅ Captured {len(initial_confidence)} confidence/entropy pairs")
+        print("=" * 60)
+    
+    return initial_confidence, initial_entropy, initial_shannon_entropy, additional_features, ar_context_tokens
+
+
 @ torch.no_grad()
 def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_sizes=None, temperature=0.,
                    cfg_scale=0., remasking='low_confidence', mask_id=126336, curr_pos=0, correct_answer=None, verbose=True):
@@ -319,18 +456,6 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     # Calculate steps per block (assume uniform distribution)
     assert steps % num_blocks == 0
     steps_per_block = steps // num_blocks
-
-    # Define helper functions
-    def _entropy(v: float) -> float:
-        return round(-float(v) * float(np.log(max(v, 1e-12))), 4)
-    
-    def _shannon_entropy(probs: torch.Tensor) -> float:
-        """Calculate Shannon entropy over full probability distribution"""
-        # Ensure probabilities are positive and normalized
-        probs = torch.clamp(probs, min=1e-12)
-        probs = probs / probs.sum()  # Normalize just in case
-        entropy = -torch.sum(probs * torch.log(probs))
-        return round(float(entropy), 4)
 
     first_correct_step = None  # Track first step with correct answer
     block_confidences = {}  # Track confidence for each block
@@ -402,109 +527,17 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
             if verbose:
                 print(f"🎭 Tokens decoded so far: {decoded_count}/{gen_length} (masked: {masked_count})")
             
-            # CAPTURE TOP-1 TOKENS after AR context is built (for parallel vs sequential analysis)
-            if verbose:
-                print(f"🔍 CAPTURING top-1 tokens after AR context (blocks 0 to {curr_pos-1} processed)")
-            top1_tokens = torch.argmax(logits, dim=-1)  # Get top-1 predictions for all positions
-            ar_context_tokens = x.clone()  # Start with current state (AR context + masks)
-            ar_context_tokens[0, gen_start:gen_end] = top1_tokens[0, gen_start:gen_end]  # Fill with top-1 predictions
-            
-            ar_tokens_text = tokenizer.decode(ar_context_tokens[0, prompt.shape[1]:], skip_special_tokens=True)
-            if verbose:
-                print(f"📝 AR context + top-1 predictions: '{ar_tokens_text}'")
-            
-            # Calculate comprehensive confidence metrics
-            p = F.softmax(logits, dim=-1)  # Full softmax probabilities
-            gen_logits = logits[0, gen_start:gen_end]  # Logits for generation positions only
-            gen_probs = p[0, gen_start:gen_end]  # Probabilities for generation positions only
-            
-            # Get top-k predictions for margin calculations
-            top_probs, top_indices = torch.topk(gen_probs, k=min(2, gen_probs.shape[1]), dim=1)
-            
-            # Basic confidence and entropy (original)
-            initial_conf = torch.squeeze(
-                torch.gather(gen_probs, dim=-1, index=torch.unsqueeze(torch.argmax(gen_logits, dim=-1), -1)), -1
+            # Extract features using the shared extract_features function
+            (initial_confidence, initial_entropy, initial_shannon_entropy, 
+             additional_features, ar_context_tokens) = extract_features(
+                logits=logits,
+                x=x,
+                gen_start=gen_start,
+                gen_length=gen_length,
+                tokenizer=tokenizer,
+                verbose=verbose,
+                curr_pos=curr_pos
             )
-            
-            initial_confidence = [round(float(initial_conf[i]), 4) for i in range(gen_length)]
-            initial_entropy = [_entropy(float(initial_conf[i])) for i in range(gen_length)]
-            initial_shannon_entropy = [_shannon_entropy(gen_probs[i]) for i in range(gen_length)]
-            
-            # NEW FEATURES: Calculate additional metrics
-            additional_features = {}
-            
-            for pos in range(gen_length):
-                pos_probs = gen_probs[pos]  # Probabilities for this position
-                pos_logits = gen_logits[pos]  # Logits for this position
-                
-                # Basic features
-                conf_0 = float(initial_conf[pos])  # Confidence of next token
-                entropy_0 = initial_entropy[pos]  # Entropy of next token (self-information)
-                shannon_entropy_0 = initial_shannon_entropy[pos]  # Shannon entropy of full distribution
-                
-                # Top1 margin (difference between top-1 and top-2)
-                pos_top_probs, _ = torch.topk(pos_probs, k=min(2, pos_probs.shape[0]))
-                if len(pos_top_probs) >= 2:
-                    top1_margin = float(pos_top_probs[0] - pos_top_probs[1])
-                else:
-                    top1_margin = float(pos_top_probs[0])  # Only one token available
-                
-                # Global features (mean/std across remaining tokens from current position)
-                remaining_conf = initial_confidence[pos:]
-                remaining_entropy = initial_entropy[pos:]
-                remaining_shannon_entropy = initial_shannon_entropy[pos:]
-                
-                mean_confidence = float(np.mean(remaining_conf)) if remaining_conf else 0.0
-                mean_entropy = float(np.mean(remaining_entropy)) if remaining_entropy else 0.0
-                shannon_mean_entropy = float(np.mean(remaining_shannon_entropy)) if remaining_shannon_entropy else 0.0
-                conf_std = float(np.std(remaining_conf)) if len(remaining_conf) > 1 else 0.0
-                entropy_std = float(np.std(remaining_entropy)) if len(remaining_entropy) > 1 else 0.0
-                shannon_entropy_std = float(np.std(remaining_shannon_entropy)) if len(remaining_shannon_entropy) > 1 else 0.0
-                
-                # Specific position features
-                conf_1 = remaining_conf[1] if len(remaining_conf) > 1 else 0.0  # 2nd token confidence
-                
-                # Top-K vs Sequential features
-                # Get all remaining confidences and find top-k vs next-k
-                remaining_tensor = torch.tensor(remaining_conf)
-                
-                # Top4/8 confidence minimums (best 4/8 tokens regardless of position)
-                top4_values, _ = torch.topk(remaining_tensor, k=min(4, len(remaining_tensor)), largest=True)
-                top8_values, _ = torch.topk(remaining_tensor, k=min(8, len(remaining_tensor)), largest=True)
-                top4_conf_min = float(top4_values[-1]) if len(top4_values) > 0 else 0.0  # Minimum of top 4
-                top8_conf_min = float(top8_values[-1]) if len(top8_values) > 0 else 0.0  # Minimum of top 8
-                
-                # Next4/8 confidence minimums (immediate next 4/8 sequential tokens)
-                next4_conf = remaining_conf[:4]  # Next 4 sequential tokens
-                next8_conf = remaining_conf[:8]  # Next 8 sequential tokens
-                next4_conf_min = float(min(next4_conf)) if next4_conf else 0.0
-                next8_conf_min = float(min(next8_conf)) if next8_conf else 0.0
-                
-                # Store all features for this position
-                additional_features[pos] = {
-                    'conf_0': conf_0,
-                    'entropy_0': entropy_0,
-                    'shannon_entropy_0': shannon_entropy_0,
-                    'top1_margin': top1_margin,
-                    'mean_confidence': mean_confidence,
-                    'mean_entropy': mean_entropy,
-                    'shannon_mean_entropy': shannon_mean_entropy,
-                    'conf_std': conf_std,
-                    'entropy_std': entropy_std,
-                    'shannon_entropy_std': shannon_entropy_std,
-                    'conf_1': conf_1,
-                    'top4_conf_min': top4_conf_min,
-                    'next4_conf_min': next4_conf_min,
-                    'top8_conf_min': top8_conf_min,
-                    'next8_conf_min': next8_conf_min,
-                }
-            
-            # Show sample of captured values
-            if verbose:
-                print(f"📊 Sample confidence values: {initial_confidence[:5]}...")
-                print(f"📈 Sample entropy values: {initial_entropy[:5]}...")
-                print(f"✅ Captured {len(initial_confidence)} confidence/entropy pairs")
-                print("=" * 60)
 
         # initialize boolean mask to all <mask> in current block
         block_mask_index = (x[:, prompt.shape[1] + block_start: prompt.shape[1] + block_end] == mask_id)
