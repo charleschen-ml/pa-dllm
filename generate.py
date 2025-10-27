@@ -221,7 +221,7 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         # print the size of x and decoded x
         print(f"The size of x: {x.shape}")
         decoded_x = tokenizer.batch_decode(x, skip_special_tokens=False)[0]
-        print(f"The decoded x: {decoded_x}")
+        print(f"The decoded x:\n {decoded_x}")
 
         # Get logits for current state
         if cfg_scale > 0.:
@@ -239,7 +239,61 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
         x0 = torch.argmax(logits_with_noise, dim=-1)
 
-        block_size = 1 # hardcode for debugging
+        # Extract features
+        (initial_confidence, initial_entropy, initial_shannon_entropy, 
+         additional_features, ar_context_tokens) = extract_features(
+            logits=logits,
+            x=x,
+            gen_start=gen_start,
+            gen_length=gen_length,
+            tokenizer=tokenizer,
+            verbose=False,
+            curr_pos=curr_pos
+        )
+        
+        # Predict block_size using scheduler
+        if scheduler is not None:
+            from inference import predict_block_size
+            position_relative = round(curr_pos / gen_length, 4)
+            features = additional_features.get(curr_pos, {})
+            features['position_relative'] = position_relative
+            
+            # Get relative block size from XGBoost
+            block_size_rel = predict_block_size(
+                scheduler=scheduler,
+                features=features,
+                gen_length=gen_length,
+                use_regression=use_regression
+            )
+            
+            # Convert to absolute block size based on REMAINING tokens
+            remaining_tokens = gen_length - curr_pos
+            block_size = int(round(block_size_rel * remaining_tokens))
+            block_size = max(1, min(block_size, remaining_tokens))
+        else:
+            remaining_tokens = gen_length - curr_pos
+            block_size = min(block_length, remaining_tokens)
+
+        block_size = 2 # hardcode for debugging
+
+        # print decoded x and x0
+        # print(f"The decoded x:\n {tokenizer.batch_decode(x, skip_special_tokens=False)[0]}")
+        print(f"\nThe decoded x0 (FULL):\n {tokenizer.batch_decode(x0, skip_special_tokens=False)[0]}")
+        
+        # Show prompt region vs completion region separately
+        x0_prompt = x0[:, :gen_start]
+        x0_completion = x0[:, gen_start:gen_end]
+        print(f"\nx0 PROMPT region:\n {tokenizer.batch_decode(x0_prompt, skip_special_tokens=False)[0]}")
+        
+        # Show completion region with each token in quotes (with escaped special chars)
+        print(f"\nx0 COMPLETION region (token by token):")
+        completion_tokens = []
+        for i in range(gen_length):
+            token_id = x0_completion[0, i].item()
+            token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+            # Use repr() to show escaped characters like \n, \t, etc.
+            completion_tokens.append(repr(token_text))
+        print(" ".join(completion_tokens))
         
         # Semi-autoregressive approach: Unmask the NEXT block_size tokens sequentially
         # (not top-confidence tokens, but next N positions from left to right)
@@ -268,6 +322,16 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         newly_unmasked = x[:, block_abs_start:block_abs_end]
         newly_unmasked_text = tokenizer.batch_decode(newly_unmasked, skip_special_tokens=True)[0]
         print(f"🆕 Newly unmasked tokens: '{newly_unmasked_text}'")
+        
+        # Show each newly unmasked token in quotes (with escaped special chars)
+        print(f"🆕 Newly unmasked tokens (token by token):")
+        unmasked_tokens = []
+        for i in range(block_size):
+            token_id = newly_unmasked[0, i].item()
+            token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+            # Use repr() to show escaped characters like \n, \t, etc.
+            unmasked_tokens.append(repr(token_text))
+        print(" ".join(unmasked_tokens))
         
     # print final output
     # out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
@@ -335,38 +399,27 @@ def extract_features(logits, x, gen_start, gen_length, tokenizer=None, verbose=F
     initial_entropy = [_entropy(float(initial_conf[i])) for i in range(gen_length)]
     initial_shannon_entropy = [_shannon_entropy(gen_probs[i]) for i in range(gen_length)]
     
-    # Calculate additional features for each position
+    # Calculate additional features for each position (30 features total for XGBoost)
     additional_features = {}
     
     for pos in range(gen_length):
+        # Global features (mean/std across remaining tokens from current position)
+        remaining_conf = initial_confidence[pos:]
+        remaining_shannon_entropy = initial_shannon_entropy[pos:]
+        
+        # Top1 margin (difference between top-1 and top-2) at this position
         pos_probs = gen_probs[pos]  # Probabilities for this position
-        
-        # Basic features
-        conf_0 = float(initial_conf[pos])  # Confidence of next token
-        entropy_0 = initial_entropy[pos]  # Entropy of next token (self-information)
-        shannon_entropy_0 = initial_shannon_entropy[pos]  # Shannon entropy of full distribution
-        
-        # Top1 margin (difference between top-1 and top-2)
         pos_top_probs, _ = torch.topk(pos_probs, k=min(2, pos_probs.shape[0]))
         if len(pos_top_probs) >= 2:
             top1_margin = float(pos_top_probs[0] - pos_top_probs[1])
         else:
             top1_margin = float(pos_top_probs[0])  # Only one token available
         
-        # Global features (mean/std across remaining tokens from current position)
-        remaining_conf = initial_confidence[pos:]
-        remaining_entropy = initial_entropy[pos:]
-        remaining_shannon_entropy = initial_shannon_entropy[pos:]
-        
+        # Aggregate statistics
         mean_confidence = float(np.mean(remaining_conf)) if remaining_conf else 0.0
-        mean_entropy = float(np.mean(remaining_entropy)) if remaining_entropy else 0.0
         shannon_mean_entropy = float(np.mean(remaining_shannon_entropy)) if remaining_shannon_entropy else 0.0
         conf_std = float(np.std(remaining_conf)) if len(remaining_conf) > 1 else 0.0
-        entropy_std = float(np.std(remaining_entropy)) if len(remaining_entropy) > 1 else 0.0
         shannon_entropy_std = float(np.std(remaining_shannon_entropy)) if len(remaining_shannon_entropy) > 1 else 0.0
-        
-        # Specific position features
-        conf_1 = remaining_conf[1] if len(remaining_conf) > 1 else 0.0  # 2nd token confidence
         
         # Top-K vs Sequential features
         remaining_tensor = torch.tensor(remaining_conf)
@@ -383,25 +436,46 @@ def extract_features(logits, x, gen_start, gen_length, tokenizer=None, verbose=F
         next4_conf_min = float(min(next4_conf)) if next4_conf else 0.0
         next8_conf_min = float(min(next8_conf)) if next8_conf else 0.0
         
-        # Store all features for this position
-        additional_features[pos] = {
-            'conf_0': conf_0,
-            'entropy_0': entropy_0,
-            'shannon_entropy_0': shannon_entropy_0,
+        # Build 30-feature dictionary matching predict_block_size() feature_order
+        # conf_0 through conf_9: confidence values for positions pos to pos+9
+        # shannon_entropy_0 through shannon_entropy_9: shannon entropy values for positions pos to pos+9
+        feature_dict = {
+            # Confidence features (positions pos to pos+9)
+            'conf_0': remaining_conf[0] if len(remaining_conf) > 0 else 0.0,
+            'conf_1': remaining_conf[1] if len(remaining_conf) > 1 else 0.0,
+            'conf_2': remaining_conf[2] if len(remaining_conf) > 2 else 0.0,
+            'conf_3': remaining_conf[3] if len(remaining_conf) > 3 else 0.0,
+            'conf_4': remaining_conf[4] if len(remaining_conf) > 4 else 0.0,
+            'conf_5': remaining_conf[5] if len(remaining_conf) > 5 else 0.0,
+            'conf_6': remaining_conf[6] if len(remaining_conf) > 6 else 0.0,
+            'conf_7': remaining_conf[7] if len(remaining_conf) > 7 else 0.0,
+            'conf_8': remaining_conf[8] if len(remaining_conf) > 8 else 0.0,
+            'conf_9': remaining_conf[9] if len(remaining_conf) > 9 else 0.0,
+            # Shannon entropy features (positions pos to pos+9)
+            'shannon_entropy_0': remaining_shannon_entropy[0] if len(remaining_shannon_entropy) > 0 else 0.0,
+            'shannon_entropy_1': remaining_shannon_entropy[1] if len(remaining_shannon_entropy) > 1 else 0.0,
+            'shannon_entropy_2': remaining_shannon_entropy[2] if len(remaining_shannon_entropy) > 2 else 0.0,
+            'shannon_entropy_3': remaining_shannon_entropy[3] if len(remaining_shannon_entropy) > 3 else 0.0,
+            'shannon_entropy_4': remaining_shannon_entropy[4] if len(remaining_shannon_entropy) > 4 else 0.0,
+            'shannon_entropy_5': remaining_shannon_entropy[5] if len(remaining_shannon_entropy) > 5 else 0.0,
+            'shannon_entropy_6': remaining_shannon_entropy[6] if len(remaining_shannon_entropy) > 6 else 0.0,
+            'shannon_entropy_7': remaining_shannon_entropy[7] if len(remaining_shannon_entropy) > 7 else 0.0,
+            'shannon_entropy_8': remaining_shannon_entropy[8] if len(remaining_shannon_entropy) > 8 else 0.0,
+            'shannon_entropy_9': remaining_shannon_entropy[9] if len(remaining_shannon_entropy) > 9 else 0.0,
+            # Aggregate features
             'top1_margin': top1_margin,
             'mean_confidence': mean_confidence,
-            'mean_entropy': mean_entropy,
             'shannon_mean_entropy': shannon_mean_entropy,
             'conf_std': conf_std,
-            'entropy_std': entropy_std,
             'shannon_entropy_std': shannon_entropy_std,
-            'conf_1': conf_1,
             'top4_conf_min': top4_conf_min,
             'next4_conf_min': next4_conf_min,
             'top8_conf_min': top8_conf_min,
             'next8_conf_min': next8_conf_min,
         }
-    
+        
+        additional_features[pos] = feature_dict
+
     # Show sample of captured values
     if verbose:
         print(f"📊 Sample confidence values: {initial_confidence[:5]}...")
@@ -944,7 +1018,7 @@ def main():
     input_ids = tokenizer(prompt)['input_ids']
     input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
 
-    out = generate(model, input_ids, steps=128, gen_length=128, block_length=32, temperature=0., cfg_scale=0., remasking='low_confidence')
+    out = generate_vanilla(model, input_ids, steps=128, gen_length=128, block_length=32, temperature=0., cfg_scale=0., remasking='low_confidence')
     # This print is in main section, keep it for debugging
     print(tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0])
 
