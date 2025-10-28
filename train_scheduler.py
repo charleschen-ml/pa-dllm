@@ -105,8 +105,8 @@ def main(use_wandb=True):
     # ========================================
     HYPERPARAMS = {
         # Tree structure
-        'n_estimators': 1000,      # Number of trees (more = better fit, slower). Try: 50, 100, 200, 500
-        'max_depth': 3,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
+        'n_estimators': 100,      # Number of trees (more = better fit, slower). Try: 50, 100, 200, 500
+        'max_depth': 6,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
         
         # Learning
         'learning_rate': 0.05,    # Learning rate (lower = slower, more careful). Try: 0.01, 0.05, 0.1, 0.3
@@ -137,6 +137,7 @@ def main(use_wandb=True):
     # Data configuration
     DATA_PATH = "./data/sft_training_samples_multi_greedy_parallel.csv"
     MODEL_PATH = "./cache/block_size_scheduler.json"
+    NUM_SAMPLES = None  # Set to N to use only first N samples (for overfitting experiments), or None for all samples
     TEST_SIZE = 0.15   # 15% for final test (completely unseen)
     VAL_SIZE = 0.15    # 15% for validation (used for early stopping)
                        # 70% for training
@@ -173,6 +174,23 @@ def main(use_wandb=True):
         after_count = len(df)
         print(f"🔍 Filtered out {before_count - after_count} samples where answer_found==True")
         print(f"   Remaining: {after_count} samples (before answer found)")
+    
+    # Filter to first N samples if NUM_SAMPLES is set (for overfitting experiments)
+    if NUM_SAMPLES is not None:
+        before_count = len(df)
+        
+        # Get first N unique question_ids if available, otherwise first N samples
+        if 'question_id' in df.columns:
+            unique_questions = df['question_id'].unique()[:NUM_SAMPLES]
+            df = df[df['question_id'].isin(unique_questions)].reset_index(drop=True)
+            print(f"🔬 Overfitting mode: Filtering to first {NUM_SAMPLES} question(s)")
+            print(f"   Before: {before_count} samples")
+            print(f"   After:  {len(df)} samples from {len(unique_questions)} question(s)")
+        else:
+            df = df.head(NUM_SAMPLES).reset_index(drop=True)
+            print(f"🔬 Overfitting mode: Filtering to first {NUM_SAMPLES} sample(s)")
+            print(f"   Before: {before_count} samples")
+            print(f"   After:  {len(df)} samples")
     
     # Feature columns (30 features - all confidence and entropy variants + aggregates)
     feature_cols = [
@@ -265,54 +283,73 @@ def main(use_wandb=True):
     train_pct = int((1 - TEST_SIZE - VAL_SIZE) * 100)
     val_pct = int(VAL_SIZE * 100)
     test_pct = int(TEST_SIZE * 100)
-    print(f"\n🔀 Splitting data by question_id ({train_pct}% train, {val_pct}% val, {test_pct}% test)...")
     
+    # Check if we have enough data for proper splitting
     if 'question_id' in df.columns:
-        # Split by question_id (all samples from same question go to same split)
         unique_questions = df['question_id'].unique()
-        
-        # First split: separate test set (completely unseen)
-        train_val_questions, test_questions = train_test_split(
-            unique_questions, test_size=TEST_SIZE, random_state=42
-        )
-        
-        # Second split: split remaining into train and val
-        # val_size_adjusted = VAL_SIZE / (1 - TEST_SIZE) to get correct proportion
-        val_size_adjusted = VAL_SIZE / (1 - TEST_SIZE)
-        train_questions, val_questions = train_test_split(
-            train_val_questions, test_size=val_size_adjusted, random_state=42
-        )
-        
-        # Filter dataframe by question_id
-        train_mask = df['question_id'].isin(train_questions)
-        val_mask = df['question_id'].isin(val_questions)
-        test_mask = df['question_id'].isin(test_questions)
-        
-        X_train = X[train_mask]
-        X_val = X[val_mask]
-        X_test = X[test_mask]
-        y_train = y[train_mask]
-        y_val = y[val_mask]
-        y_test = y[test_mask]
-        
-        print(f"  Train: {len(train_questions)} questions → {len(X_train)} samples")
-        print(f"  Val:   {len(val_questions)} questions → {len(X_val)} samples (for early stopping)")
-        print(f"  Test:  {len(test_questions)} questions → {len(X_test)} samples (completely unseen)")
+        num_unique_questions = len(unique_questions)
     else:
-        # Fallback: regular split if question_id not available
-        print("⚠️  question_id not found, using sample-level split (may have leakage!)")
-        # First split out test
-        X_train_val, X_test, y_train_val, y_test = train_test_split(
-            X, y, test_size=TEST_SIZE, random_state=42
-        )
-        # Then split train_val into train and val
-        val_size_adjusted = VAL_SIZE / (1 - TEST_SIZE)
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_train_val, y_train_val, test_size=val_size_adjusted, random_state=42
-        )
-        print(f"  Train: {len(X_train)} samples")
-        print(f"  Val:   {len(X_val)} samples")
-        print(f"  Test:  {len(X_test)} samples")
+        num_unique_questions = len(df)
+    
+    # If too few samples/questions, skip split and use all data for training (overfitting mode)
+    if num_unique_questions < 3:
+        print(f"\n⚠️  Only {num_unique_questions} unique question(s) - skipping train/val/test split")
+        print(f"   Using all {len(df)} samples for training (overfitting mode)")
+        X_train = X
+        y_train = y
+        X_val = X  # Use same data for validation (no early stopping benefit)
+        y_val = y
+        X_test = X  # Use same data for test
+        y_test = y
+    else:
+        print(f"\n🔀 Splitting data by question_id ({train_pct}% train, {val_pct}% val, {test_pct}% test)...")
+        
+        if 'question_id' in df.columns:
+            # Split by question_id (all samples from same question go to same split)
+            unique_questions = df['question_id'].unique()
+            
+            # First split: separate test set (completely unseen)
+            train_val_questions, test_questions = train_test_split(
+                unique_questions, test_size=TEST_SIZE, random_state=42
+            )
+            
+            # Second split: split remaining into train and val
+            # val_size_adjusted = VAL_SIZE / (1 - TEST_SIZE) to get correct proportion
+            val_size_adjusted = VAL_SIZE / (1 - TEST_SIZE)
+            train_questions, val_questions = train_test_split(
+                train_val_questions, test_size=val_size_adjusted, random_state=42
+            )
+            
+            # Filter dataframe by question_id
+            train_mask = df['question_id'].isin(train_questions)
+            val_mask = df['question_id'].isin(val_questions)
+            test_mask = df['question_id'].isin(test_questions)
+            
+            X_train = X[train_mask]
+            X_val = X[val_mask]
+            X_test = X[test_mask]
+            y_train = y[train_mask]
+            y_val = y[val_mask]
+            y_test = y[test_mask]
+            
+            print(f"  Train: {len(train_questions)} questions → {len(X_train)} samples")
+            print(f"  Val:   {len(val_questions)} questions → {len(X_val)} samples (for early stopping)")
+            print(f"  Test:  {len(test_questions)} questions → {len(X_test)} samples (completely unseen)")
+        else:
+            # Fallback: regular split if question_id not available
+            print("⚠️  question_id not found, using sample-level split (may have leakage!)")
+            # First split out test
+            X_train_val, X_test, y_train_val, y_test = train_test_split(
+                X, y, test_size=TEST_SIZE, random_state=42
+            )
+            # Then split train_val into train and val
+            val_size_adjusted = VAL_SIZE / (1 - TEST_SIZE)
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_train_val, y_train_val, test_size=val_size_adjusted, random_state=42
+            )
+            print(f"  Train: {len(X_train)} samples")
+            print(f"  Val:   {len(X_val)} samples")
+            print(f"  Test:  {len(X_test)} samples")
     
     # Compute sample weights (only for classification)
     if not USE_REGRESSION:

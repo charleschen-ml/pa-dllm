@@ -1775,16 +1775,16 @@ def extract_features_at_position(model, tokenizer, input_ids, curr_pos, gen_leng
 
 def predict_block_size(scheduler, features, gen_length, use_regression=True):
     """
-    Predict block size for current position using XGBoost scheduler.
+    Predict relative block size for current position using XGBoost scheduler.
     
     Args:
         scheduler: Trained XGBoost model
         features: Dict of feature values
-        gen_length: Total generation length
+        gen_length: Total generation length (not used, kept for compatibility)
         use_regression: If True, scheduler outputs continuous value; else class index
     
     Returns:
-        block_size (int): Predicted block size (clipped to [1, gen_length])
+        block_size_rel (float): Predicted relative block size (0.0 to 1.0)
     """
     import numpy as np
     
@@ -1809,21 +1809,16 @@ def predict_block_size(scheduler, features, gen_length, use_regression=True):
     if use_regression:
         # Predict continuous block_size_rel
         block_size_rel = scheduler.predict(feature_array)[0]
-        block_size = int(round(block_size_rel * gen_length))
     else:
-        # Predict class and convert to block_size
+        # Predict class and convert to relative size
         class_probs = scheduler.predict_proba(feature_array)[0]
         predicted_class = np.argmax(class_probs)
         
         # Convert class to relative size (classes: 0=1/32, 1=1/16, 2=1/8, 3=1/4, 4=1/2, 5=1)
         rel_values = [1/32, 1/16, 1/8, 1/4, 1/2, 1.0]
         block_size_rel = rel_values[predicted_class]
-        block_size = int(round(block_size_rel * gen_length))
     
-    # Clip to valid range
-    block_size = max(1, min(gen_length, block_size))
-    
-    return block_size
+    return block_size_rel
 
 
 

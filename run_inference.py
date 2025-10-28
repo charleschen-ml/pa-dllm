@@ -36,7 +36,7 @@ if __name__ == '__main__':
     ########################################################
     USE_PARALLEL = False  # Set to False for sequential mode (needed for batch inference)
     NUM_GPUS = 1  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = 1  # Number of questions to process (None = process all questions in CSV)
+    NUM_QUESTIONS = None  # Number of questions to process (None = process all questions in CSV)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -115,27 +115,27 @@ if __name__ == '__main__':
     ########################################################
     # Create dataset of questions answered correctly
     ########################################################
-    # # Load gsm8k
-    # df = load_gsm8k(start=0, end=1)
+    # Load gsm8k
+    df = load_gsm8k(start=0, end=100)
 
-    # # Run batch inference
-    # df = run_inference_batch(
-    #     model=model,
-    #     tokenizer=tokenizer,
-    #     device=device,
-    #     model_args=model_args,
-    #     input_csv_path="./data/gsm8k.csv",
-    #     output_csv_path="./data/gsm8k_output.csv",
-    #     steps=32,
-    #     gen_length=32,
-    #     block_length=1,
-    #     instruction=instruction
-    # )
-    # # Load df from csv
-    # df = pd.read_csv("./data/gsm8k_output.csv")
-    # # Calculate score
-    # correct_path = "./data/gsm8k_correct.csv"
-    # calculate_score(df, correct_path)
+    # Run batch inference
+    df = run_inference_batch(
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        model_args=model_args,
+        input_csv_path="./data/gsm8k.csv",
+        output_csv_path="./data/gsm8k_output.csv",
+        steps=32,
+        gen_length=32,
+        block_length=1,
+        instruction=instruction
+    )
+    # Load df from csv
+    df = pd.read_csv("./data/gsm8k_output.csv")
+    # Calculate score
+    correct_path = "./data/gsm8k_correct.csv"
+    calculate_score(df, correct_path)
 
     ########################################################
     # Load single prompt (only for sequential mode)
@@ -345,6 +345,13 @@ if __name__ == '__main__':
     CFG_SCALE = 0.
     REMASKING = 'low_confidence'
     
+    # Load all questions from gsm8k_correct.csv
+    df_questions = pd.read_csv("./data/gsm8k_correct.csv")
+    
+    # Limit to NUM_QUESTIONS if specified
+    if NUM_QUESTIONS is not None:
+        df_questions = df_questions.head(NUM_QUESTIONS)
+    
     print(f"\n{'='*80}")
     print("📊 GENERATION SETTINGS")
     print(f"{'='*80}")
@@ -352,64 +359,139 @@ if __name__ == '__main__':
     print(f"  Temperature: {TEMPERATURE}")
     print(f"  CFG scale: {CFG_SCALE}")
     print(f"  Remasking: {REMASKING}")
-    print(f"  Expected answer: {correct_answer}")
+    print(f"  Total questions: {len(df_questions)}")
     print(f"{'='*80}\n")
     
-    print(f"📝 Question: {prompt}\n")
+    # Store results
+    results = []
+    total_start_time = time.time()
     
-    # # Tokenize prompt
-    # input_ids = tokenizer(prompt)['input_ids']
-    # input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
+    # Loop through all questions
+    for idx, row in df_questions.iterrows():
+        question = row['question']
+        correct_answer = int(row['answer_numerical'])
+        
+        if instruction is not None:
+            question = instruction + question
+        prompt = question
+        
+        print(f"\n{'='*80}")
+        print(f"📝 Question {idx+1}/{len(df_questions)}")
+        print(f"{'='*80}")
+        print(f"Question: {prompt}")
+        print(f"Expected answer: {correct_answer}\n")
 
-    # Add special tokens for the Instruct model (not required for base model)
-    m = [{"role": "user", "content": prompt}, ]
-    prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-    input_ids = tokenizer(prompt)['input_ids']
-    input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
+        # Add special tokens for the Instruct model (not required for base model)
+        m = [{"role": "user", "content": prompt}, ]
+        prompt_formatted = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        input_ids = tokenizer(prompt_formatted)['input_ids']
+        input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
+        
+        # Run generation with XGBoost scheduler
+        print("🎯 Starting dynamic block size generation (CHARLES)...")
+        start_time = time.time()
+        
+        out, num_steps = generate_charles(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=input_ids,
+            scheduler=scheduler,
+            steps=STEPS,
+            gen_length=GEN_LENGTH,
+            block_length=1,  # Fallback if scheduler is None
+            temperature=TEMPERATURE,
+            cfg_scale=CFG_SCALE,
+            remasking=REMASKING,
+            expected_answer=correct_answer,
+            use_regression=USE_REGRESSION
+        )
+        
+        end_time = time.time()
+        generation_time = end_time - start_time
+        
+        # Calculate speedup vs autoregressive (AR takes gen_length steps)
+        ar_steps = GEN_LENGTH  # Autoregressive = 1 token per step = gen_length steps
+        speedup = ar_steps / num_steps if num_steps > 0 else 0
+        
+        # Decode output
+        generated_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        
+        print(f"\n{'='*80}")
+        print("✅ GENERATION COMPLETE!")
+        print(f"{'='*80}")
+        print(f"\n📄 Generated Answer:\n{generated_text}")
+        
+        # Extract numerical answer
+        from generate import extract_numerical
+        predicted_answer = extract_numerical(generated_text)
+        is_correct = (predicted_answer == correct_answer) if predicted_answer is not None else False
+        
+        print(f"\n{'='*80}")
+        print("📊 RESULTS")
+        print(f"{'='*80}")
+        print(f"  Expected answer: {correct_answer}")
+        print(f"  Predicted answer: {predicted_answer}")
+        print(f"  Correct: {'✅ YES' if is_correct else '❌ NO'}")
+        print(f"\n⚡ EFFICIENCY:")
+        print(f"  AR steps (baseline): {ar_steps}")
+        print(f"  CHARLES steps: {num_steps}")
+        print(f"  Speedup: {speedup:.2f}x")
+        print(f"\n⏱️  Generation time: {generation_time:.2f} seconds")
+        print(f"  Tokens per second: {GEN_LENGTH/generation_time:.2f}")
+        print(f"{'='*80}\n")
+        
+        # Store results
+        results.append({
+            'question': row['question'],
+            'correct_answer': correct_answer,
+            'predicted_answer': predicted_answer,
+            'generated_text': generated_text,
+            'is_correct': is_correct,
+            'ar_steps': ar_steps,
+            'num_steps': num_steps,
+            'speedup': speedup,
+            'generation_time': generation_time
+        })
     
-    # Run generation with XGBoost scheduler
-    print("🎯 Starting dynamic block size generation...")
-    start_time = time.time()
+    # Calculate overall statistics
+    total_end_time = time.time()
+    total_elapsed_time = total_end_time - total_start_time
     
-    out = generate_charles(
-        model=model,
-        tokenizer=tokenizer,
-        prompt=input_ids,
-        scheduler=scheduler,
-        steps=STEPS,
-        gen_length=GEN_LENGTH,
-        block_length=1,  # Fallback if scheduler is None
-        temperature=TEMPERATURE,
-        cfg_scale=CFG_SCALE,
-        remasking=REMASKING,
-        expected_answer=correct_answer,
-        use_regression=USE_REGRESSION
-    )
+    results_df = pd.DataFrame(results)
+    num_correct = results_df['is_correct'].sum()
+    accuracy = num_correct / len(results_df) * 100
     
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    
-    # Decode output
-    generated_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+    # Calculate average speedup for correct answers only
+    correct_df = results_df[results_df['is_correct'] == True]
+    if len(correct_df) > 0:
+        avg_speedup_correct = correct_df['speedup'].mean()
+        avg_ar_steps = correct_df['ar_steps'].mean()
+        avg_num_steps = correct_df['num_steps'].mean()
+        avg_generation_time = correct_df['generation_time'].mean()
+    else:
+        avg_speedup_correct = 0
+        avg_ar_steps = 0
+        avg_num_steps = 0
+        avg_generation_time = 0
     
     print(f"\n{'='*80}")
-    print("✅ GENERATION COMPLETE!")
+    print("📊 OVERALL RESULTS")
     print(f"{'='*80}")
-    print(f"\n📄 Generated Answer:\n{generated_text}")
-    
-    # Extract numerical answer
-    from generate import extract_numerical
-    predicted_answer = extract_numerical(generated_text)
-    is_correct = (predicted_answer == correct_answer) if predicted_answer is not None else False
-    
-    print(f"\n{'='*80}")
-    print("📊 RESULTS")
-    print(f"{'='*80}")
-    print(f"  Expected answer: {correct_answer}")
-    print(f"  Predicted answer: {predicted_answer}")
-    print(f"  Correct: {'✅ YES' if is_correct else '❌ NO'}")
-    print(f"\n⏱️  Generation time: {elapsed_time:.2f} seconds")
-    print(f"  Tokens generated: {GEN_LENGTH}")
-    print(f"  Tokens per second: {GEN_LENGTH/elapsed_time:.2f}")
+    print(f"  Total questions: {len(results_df)}")
+    print(f"  Correct answers: {num_correct}/{len(results_df)}")
+    print(f"  Accuracy: {accuracy:.2f}%")
+    print(f"\n⚡ EFFICIENCY (for correct answers only):")
+    print(f"  Average AR steps (baseline): {avg_ar_steps:.1f}")
+    print(f"  Average CHARLES steps: {avg_num_steps:.1f}")
+    print(f"  Average speedup: {avg_speedup_correct:.2f}x")
+    print(f"\n⏱️  TIMING:")
+    print(f"  Average generation time: {avg_generation_time:.2f} seconds")
+    print(f"  Total wall time: {total_elapsed_time:.2f} seconds ({total_elapsed_time/60:.1f} minutes)")
+    print(f"  Average wall time per question: {total_elapsed_time/len(results_df):.2f} seconds")
     print(f"{'='*80}\n")
+    
+    # Save results to CSV
+    output_path = "./output/charles_inference_results.csv"
+    results_df.to_csv(output_path, index=False)
+    print(f"💾 Results saved to: {output_path}")
 

@@ -253,12 +253,18 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             verbose=False,
             curr_pos=curr_pos
         )
-        
+
         # Predict block_size using scheduler
         if scheduler is not None:
             from inference import predict_block_size
             position_relative = round(curr_pos / gen_length, 4)
             features = additional_features.get(curr_pos, {})
+            
+            # Print select features: mean_confidence and shannon_mean_entropy
+            mean_conf = features.get('mean_confidence', None)
+            shannon_ent = features.get('shannon_mean_entropy', None)
+            print(f"The mean_confidence: {mean_conf:.4f}" if mean_conf is not None else "The mean_confidence: N/A")
+            print(f"The shannon_mean_entropy: {shannon_ent:.4f}" if shannon_ent is not None else "The shannon_mean_entropy: N/A")
             features['position_relative'] = position_relative
             
             # Get relative block size from XGBoost
@@ -282,14 +288,14 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         #     block_size = 2
         # After first iteration, use scheduler/default block_size
 
-        # print decoded x and x0
+        # Print decoded x and x0
         # print(f"The decoded x:\n {tokenizer.batch_decode(x, skip_special_tokens=False)[0]}")
-        print(f"\nThe decoded x0 (FULL):\n {tokenizer.batch_decode(x0, skip_special_tokens=False)[0]}")
+        # print(f"\nThe decoded x0 (FULL):\n {tokenizer.batch_decode(x0, skip_special_tokens=False)[0]}")
         
         # Show prompt region vs completion region separately
         x0_prompt = x0[:, :gen_start]
         x0_completion = x0[:, gen_start:gen_end]
-        print(f"\nx0 PROMPT region:\n {tokenizer.batch_decode(x0_prompt, skip_special_tokens=False)[0]}")
+        # print(f"\nx0 PROMPT region:\n {tokenizer.batch_decode(x0_prompt, skip_special_tokens=False)[0]}")
         
         # Show completion region with each token in quotes (with escaped special chars)
         print(f"\nx0 COMPLETION region (token by token):")
@@ -322,6 +328,8 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
         print(f"\n{'='*80}")
         print(f"🔄 Step: Position {curr_pos-block_size} → {curr_pos}/{gen_length}")
+        print(f"📊 Predicted block_size_rel: {block_size_rel:.4f}" if 'block_size_rel' in locals() else "📊 Predicted block_size_rel: N/A")
+        print(f"📊 Remaining tokens: {remaining_tokens}")
         print(f"📊 Predicted block_size: {block_size} tokens")
         print(f"📝 Current generation:\n{out_text}")
         
@@ -355,7 +363,7 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
     print(f"⚡ Speedup vs autoregressive: {gen_length/num_steps:.2f}x")
     print(f"{'='*80}\n")
 
-    return x
+    return x, num_steps
 
 
 def _entropy(v: float) -> float:
