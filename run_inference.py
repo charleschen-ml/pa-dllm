@@ -166,9 +166,9 @@ if __name__ == '__main__':
     # manual_settings = {}
     # training_sample = generate_one_sample(
     #     model, tokenizer, device, prompt, model_args, 
-    #     gen_length=128, 
+    #     gen_length=32, 
     #     base_block_length=1, 
-    #     steps=128, 
+    #     steps=32, 
     #     curr_pos=0, 
     #     correct_answer=correct_answer,
     #     manual_settings=manual_settings,)
@@ -357,7 +357,13 @@ if __name__ == '__main__':
     
     print(f"📝 Question: {prompt}\n")
     
-    # Tokenize prompt
+    # # Tokenize prompt
+    # input_ids = tokenizer(prompt)['input_ids']
+    # input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
+
+    # Add special tokens for the Instruct model (not required for base model)
+    m = [{"role": "user", "content": prompt}, ]
+    prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
     input_ids = tokenizer(prompt)['input_ids']
     input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
     
