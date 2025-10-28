@@ -261,67 +261,6 @@ if __name__ == '__main__':
     #     print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
 
     ########################################################
-    # Run inference with XGBoost scheduler (FAST ADAPTIVE INFERENCE)
-    ########################################################
-    # print("="*80)
-    # print("🚀 XGBOOST SCHEDULER-GUIDED INFERENCE")
-    # print("="*80)
-    
-    # # Load scheduler functions
-    # from inference import load_scheduler, run_inference_batch_with_scheduler
-    
-    # # Configuration
-    # SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model
-    # USE_REGRESSION = True  # True for regression, False for classification
-    # INPUT_CSV = "./data/gsm8k_correct.csv"  # Input questions
-    # # INPUT_CSV = "./data/gsm8k.csv"  # Input questions
-    # OUTPUT_CSV = "./output/predictions_with_scheduler.csv"  # Output predictions
-    
-    # # Generation settings
-    # GEN_LENGTH = 32
-    # BASE_BLOCK_LENGTH = 1
-    # STEPS = 32
-    
-    # # Load scheduler
-    # scheduler = load_scheduler(SCHEDULER_PATH, use_regression=USE_REGRESSION)
-    
-    # print(f"\n{'='*80}")
-    # print("📊 INFERENCE SETTINGS")
-    # print(f"{'='*80}")
-    # print(f"  Input:  {INPUT_CSV}")
-    # print(f"  Output: {OUTPUT_CSV}")
-    # print(f"  Scheduler: {'Regression' if USE_REGRESSION else 'Classification'}")
-    # print(f"  Generation: gen_length={GEN_LENGTH}, steps={STEPS}")
-    # print(f"{'='*80}\n")
-    
-    # # Run inference
-    # start_time = time.time()
-    # results_df = run_inference_batch_with_scheduler(
-    #     model=model,
-    #     tokenizer=tokenizer,
-    #     device=device,
-    #     scheduler=scheduler,
-    #     model_args=model_args,
-    #     input_csv_path=INPUT_CSV,
-    #     output_csv_path=OUTPUT_CSV,
-    #     steps=STEPS,
-    #     gen_length=GEN_LENGTH,
-    #     base_block_length=BASE_BLOCK_LENGTH,
-    #     use_regression=USE_REGRESSION,
-    #     instruction=instruction
-    # )
-    # end_time = time.time()
-    # elapsed_time = end_time - start_time
-    
-    # print(f"\n{'='*80}")
-    # print("✅ INFERENCE COMPLETE!")
-    # print(f"{'='*80}")
-    # print(f"\n⏱️  TIMING REPORT:")
-    # print(f"  📊 Questions processed: {len(results_df)}")
-    # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
-    # print(f"  ⚡ Time per question: {elapsed_time/len(results_df):.2f} seconds")
-
-    ########################################################
     # Run inference with XGBoost scheduler (CHARLES)
     ########################################################
     print("="*80)

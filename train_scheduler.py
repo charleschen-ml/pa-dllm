@@ -606,7 +606,6 @@ def main(use_wandb=True):
     print(f'scheduler.load_model("{MODEL_PATH}")')
     print("")
     print("# At each position during inference:")
-    print("features = extract_features_at_position(model, tokenizer, prompt, curr_pos)")
     if USE_REGRESSION:
         print("predicted_rel = scheduler.predict([features])[0]  # Direct prediction")
     else:
