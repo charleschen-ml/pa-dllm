@@ -212,8 +212,11 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
 
     # Track current position and features for XGBoost
     curr_pos = 0
+    predicted_block_sizes = []  # Track all predicted block sizes
+    num_steps = 0  # Track total number of steps
 
     while curr_pos < gen_length:  # loop until we reach gen_length
+        num_steps += 1
         # Get current generation region
         gen_start = prompt.shape[1]
         gen_end = gen_start + gen_length
@@ -274,7 +277,10 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             remaining_tokens = gen_length - curr_pos
             block_size = min(block_length, remaining_tokens)
 
-        block_size = 2 # hardcode for debugging
+        # Hardcode block_size for first iteration only (for debugging)
+        # if curr_pos == 0:
+        #     block_size = 2
+        # After first iteration, use scheduler/default block_size
 
         # print decoded x and x0
         # print(f"The decoded x:\n {tokenizer.batch_decode(x, skip_special_tokens=False)[0]}")
@@ -310,6 +316,7 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         
         # Move to next block
         curr_pos += block_size
+        predicted_block_sizes.append(block_size)  # Track this block size
 
         # Print intermediate outputs for debugging
         out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
@@ -336,6 +343,17 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
     # print final output
     # out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
     # print("\n" + out_text)
+
+    # Print generation summary
+    print(f"\n{'='*80}")
+    print(f"✅ GENERATION COMPLETE!")
+    print(f"{'='*80}")
+    print(f"📊 Total steps: {num_steps}")
+    print(f"📊 Total tokens generated: {gen_length}")
+    print(f"📊 Predicted block sizes: {predicted_block_sizes}")
+    print(f"📊 Average block size: {sum(predicted_block_sizes)/len(predicted_block_sizes):.2f}")
+    print(f"⚡ Speedup vs autoregressive: {gen_length/num_steps:.2f}x")
+    print(f"{'='*80}\n")
 
     return x
 
