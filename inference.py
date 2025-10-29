@@ -1083,6 +1083,23 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
     
     return training_samples
 
+def augment_one_sample_dispatch(use_greedy=False, **kwargs):
+    """
+    Dispatcher to choose between AR and greedy augmentation modes.
+    
+    Args:
+        use_greedy: If True, use greedy mode; if False, use AR mode
+        **kwargs: All arguments to pass to the chosen function
+    
+    Returns:
+        List of training samples
+    """
+    if use_greedy:
+        return augment_one_sample_greedy(**kwargs)
+    else:
+        return augment_one_sample(**kwargs)
+
+
 def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None, save_to_file=True, disable_tqdm=False):
     """
     Greedy version: Use optimal block sizes from previous positions instead of AR.
@@ -1515,7 +1532,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
                            gen_length=32, base_block_length=1, steps=32, break_after_answer_found=True,
                            output_json_path="./data/sft_training_samples_multi_greedy.json",
                            output_csv_path="./data/sft_training_samples_multi_greedy.csv",
-                           instruction=None):
+                           instruction=None, use_greedy=False):
     """
     Process multiple questions from a CSV file and generate training samples for each.
     
@@ -1533,6 +1550,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
         output_json_path: Output JSON file path
         output_csv_path: Output CSV file path
         instruction: Instruction to prepend to each question (default: None)
+        use_greedy: If True, use greedy mode; if False, use AR mode (default: False)
     
     Returns:
         List of all training samples across all questions
@@ -1569,7 +1587,8 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
         print(f"{'='*60}")
         
         # Generate training samples for this question
-        question_samples = augment_one_sample(
+        question_samples = augment_one_sample_dispatch(
+            use_greedy=use_greedy,
             model=model,
             tokenizer=tokenizer,
             device=device,
@@ -1604,7 +1623,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
 
 
 def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_length, steps, 
-                     break_after_answer_found, instruction, result_queue):
+                     break_after_answer_found, instruction, result_queue, use_greedy=False):
     """Worker function that processes questions on a specific GPU (module-level for pickling)"""
     import sys
     import os
@@ -1670,7 +1689,8 @@ def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_lengt
         prompt = question
         
         # Generate training samples for this question (all print statements suppressed)
-        question_samples = augment_one_sample(
+        question_samples = augment_one_sample_dispatch(
+            use_greedy=use_greedy,
             model=model,
             tokenizer=tokenizer,
             device=device,
@@ -1704,7 +1724,7 @@ def augment_multiple_samples_parallel(
     gen_length=32, base_block_length=1, steps=32, break_after_answer_found=True,
     output_json_path="./data/sft_training_samples_multi_greedy.json",
     output_csv_path="./data/sft_training_samples_multi_greedy.csv",
-    instruction=None, num_gpus=2
+    instruction=None, num_gpus=2, use_greedy=False
 ):
     """
     Parallel version: process multiple questions across multiple GPUs.
@@ -1721,6 +1741,7 @@ def augment_multiple_samples_parallel(
         output_csv_path: Output CSV file path
         instruction: Instruction to prepend to each question
         num_gpus: Number of GPUs to use (default: 2)
+        use_greedy: If True, use greedy mode; if False, use AR mode (default: False)
     
     Returns:
         List of all training samples across all questions
@@ -1765,7 +1786,7 @@ def augment_multiple_samples_parallel(
         p = mp.Process(
             target=_parallel_worker,
             args=(gpu_id, df_subset, model_args, gen_length, base_block_length, 
-                  steps, break_after_answer_found, instruction, result_queue)
+                  steps, break_after_answer_found, instruction, result_queue, use_greedy)
         )
         p.start()
         processes.append(p)

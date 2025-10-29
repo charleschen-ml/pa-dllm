@@ -20,7 +20,7 @@ importlib.reload(inference)
 
 # Load inference functions
 from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference, generate_one_sample
-from inference import augment_one_sample, augment_one_sample_greedy, load_gsm8k, augment_multiple_samples
+from inference import augment_one_sample, augment_one_sample_greedy, augment_one_sample_dispatch, load_gsm8k, augment_multiple_samples
 from generate import generate_vanilla, generate_custom, generate_charles
 
 # FASTEST: Load model weights and recreate architecture
@@ -34,9 +34,10 @@ if __name__ == '__main__':
     ########################################################
     # CONFIGURATION: Choose mode
     ########################################################
-    USE_PARALLEL = False  # Set to False for sequential mode (needed for batch inference)
-    NUM_GPUS = 1  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = None  # Number of questions to process (None = process all questions in CSV)
+    USE_GREEDY = True  # True: use greedy mode, False: use AR mode
+    USE_PARALLEL = True  # Set to False for sequential mode (needed for batch inference)
+    NUM_GPUS = 2  # Only used if USE_PARALLEL=True
+    NUM_QUESTIONS = 2  # Number of questions to process (None = process all questions in CSV)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -179,87 +180,93 @@ if __name__ == '__main__':
     # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
 
     ########################################################
-    # Augment one sample (COMMENTED OUT - using parallel version below)
+    # Augment one sample
     ########################################################
-    print("🚀 Starting augment_one_sample (AR or greedy)...")
-    start_time = time.time()
-    # Use augment_one_sample or augment_one_sample_greedy
-    training_samples = augment_one_sample_greedy( 
-        model=model,
-        tokenizer=tokenizer,
-        device=device,
-        prompt=prompt,
-        model_args=model_args,
-        gen_length=32,
-        base_block_length=1,
-        steps=32,
-        correct_answer=correct_answer,
-        break_after_answer_found=True  # Set to False to continue augmentation after answer found
-    )
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"\n⏱️  TIMING REPORT:")
-    print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
-
-    ########################################################
-    # Augment multiple samples: Sequential or Parallel
-    ########################################################
+    # mode_str = "GREEDY" if USE_GREEDY else "AR"
+    # print(f"🚀 Starting augment_one_sample ({mode_str} mode)...")
     # start_time = time.time()
     
-    # # Determine how many questions to process
-    # csv_path = "./data/gsm8k_correct.csv"
-    # df_temp = pd.read_csv(csv_path)
-    # total_questions = len(df_temp)
-    # print(f"📊 Found {total_questions} questions in {csv_path}")
-    
-    # # Use NUM_QUESTIONS if specified, otherwise process all
-    # questions_to_process = NUM_QUESTIONS if NUM_QUESTIONS is not None else total_questions
-    # print(f"🎯 Processing {questions_to_process} questions")
-    
-    # if USE_PARALLEL:
-    #     print(f"🚀 Starting PARALLEL mode with {NUM_GPUS} GPUs...")
-    #     from inference import augment_multiple_samples_parallel
-        
-    #     all_training_samples = augment_multiple_samples_parallel(
-    #         model_args=model_args,
-    #         csv_path=csv_path,
-    #         num_questions=questions_to_process,
-    #         gen_length=32,
-    #         base_block_length=1,
-    #         steps=32,
-    #         break_after_answer_found=True,
-    #         output_json_path="./data/sft_training_samples_multi_greedy_parallel.json",
-    #         output_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
-    #         instruction=instruction,
-    #         num_gpus=NUM_GPUS
-    #     )
-    # else:
-    #     print(f"🚀 Starting SEQUENTIAL mode...")
-    #     all_training_samples = augment_multiple_samples(
-    #         model=model,
-    #         tokenizer=tokenizer,
-    #         device=device,
-    #         model_args=model_args,
-    #         csv_path=csv_path,
-    #         num_questions=questions_to_process,
-    #         gen_length=32,
-    #         base_block_length=1,
-    #         steps=32,
-    #         break_after_answer_found=True,
-    #         output_json_path="./data/sft_training_samples_multi_greedy.json",
-    #         output_csv_path="./data/sft_training_samples_multi_greedy.csv",
-    #         instruction=instruction
-    #     )
+    # training_samples = augment_one_sample_dispatch(
+    #     use_greedy=USE_GREEDY,
+    #     model=model,
+    #     tokenizer=tokenizer,
+    #     device=device,
+    #     prompt=prompt,
+    #     model_args=model_args,
+    #     gen_length=32,
+    #     base_block_length=1,
+    #     steps=32,
+    #     correct_answer=correct_answer,
+    #     break_after_answer_found=True  # Set to False to continue augmentation after answer found
+    # )
     
     # end_time = time.time()
     # elapsed_time = end_time - start_time
     # print(f"\n⏱️  TIMING REPORT:")
-    # print(f"  📊 Total samples generated: {len(all_training_samples)}")
     # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
-    # print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
-    # if USE_PARALLEL:
-    #     print(f"  🚀 Used {NUM_GPUS} GPUs in parallel!")
-    #     print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
+
+    ########################################################
+    # Augment multiple samples: Sequential or Parallel
+    ########################################################
+    start_time = time.time()
+    
+    # Determine how many questions to process
+    csv_path = "./data/gsm8k_correct.csv"
+    df_temp = pd.read_csv(csv_path)
+    total_questions = len(df_temp)
+    print(f"📊 Found {total_questions} questions in {csv_path}")
+    
+    # Use NUM_QUESTIONS if specified, otherwise process all
+    questions_to_process = NUM_QUESTIONS if NUM_QUESTIONS is not None else total_questions
+    print(f"🎯 Processing {questions_to_process} questions")
+    
+    mode_str = "GREEDY" if USE_GREEDY else "AR"
+    if USE_PARALLEL:
+        print(f"🚀 Starting PARALLEL mode with {NUM_GPUS} GPUs ({mode_str} mode)...")
+        from inference import augment_multiple_samples_parallel
+        
+        all_training_samples = augment_multiple_samples_parallel(
+            model_args=model_args,
+            csv_path=csv_path,
+            num_questions=questions_to_process,
+            gen_length=32,
+            base_block_length=1,
+            steps=32,
+            break_after_answer_found=True,
+            output_json_path="./data/sft_training_samples_multi_greedy_parallel.json",
+            output_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
+            instruction=instruction,
+            num_gpus=NUM_GPUS,
+            use_greedy=USE_GREEDY
+        )
+    else:
+        print(f"🚀 Starting SEQUENTIAL mode ({mode_str} mode)...")
+        all_training_samples = augment_multiple_samples(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            model_args=model_args,
+            csv_path=csv_path,
+            num_questions=questions_to_process,
+            gen_length=32,
+            base_block_length=1,
+            steps=32,
+            break_after_answer_found=True,
+            output_json_path="./data/sft_training_samples_multi_greedy.json",
+            output_csv_path="./data/sft_training_samples_multi_greedy.csv",
+            instruction=instruction,
+            use_greedy=USE_GREEDY
+        )
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"\n⏱️  TIMING REPORT:")
+    print(f"  📊 Total samples generated: {len(all_training_samples)}")
+    print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+    print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
+    if USE_PARALLEL:
+        print(f"  🚀 Used {NUM_GPUS} GPUs in parallel!")
+        print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
 
     ########################################################
     # Run inference with XGBoost scheduler (CHARLES)
