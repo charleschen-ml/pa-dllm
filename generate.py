@@ -167,7 +167,7 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
 @torch.no_grad()
 def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_length=128, block_length=128, 
                      temperature=0., cfg_scale=0., remasking='low_confidence', mask_id=126336, 
-                     expected_answer=None, use_regression=True):
+                     expected_answer=None, use_regression=True, block_size_offset=0):
     '''
     Dynamic block size generation using XGBoost scheduler.
     
@@ -185,6 +185,7 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         mask_id: The token id of [MASK] is 126336.
         expected_answer: Optional, if set will compare against `extract_numerical()` for correctness logging.
         use_regression: If True, scheduler is regression model; else classification.
+        block_size_offset: Integer offset to subtract from predicted block_size for conservative sizing (default: 0).
     '''
 
     # Create x = prompt + completion 
@@ -236,7 +237,7 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
         else:
             logits = model(x).logits  # get logits with current x
-        
+
         # Generate tokens for current block (semi-AR: unmask next N tokens left-to-right)
         # Use the predicted tokens with added noise for sampling
         logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
@@ -278,10 +279,18 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             # Convert to absolute block size based on REMAINING tokens
             remaining_tokens = gen_length - curr_pos
             block_size = int(round(block_size_rel * remaining_tokens))
+            
+            # Apply conservative offset (subtract to make block size smaller)
+            block_size = block_size - block_size_offset
+            
+            # Ensure block_size is at least 1 and at most remaining_tokens
             block_size = max(1, min(block_size, remaining_tokens))
         else:
             remaining_tokens = gen_length - curr_pos
             block_size = min(block_length, remaining_tokens)
+            
+            # Apply conservative offset even for fallback mode
+            block_size = max(1, block_size - block_size_offset)
 
         # Hardcode block_size for first iteration only (for debugging)
         # if curr_pos == 0:
@@ -782,17 +791,17 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
         print(f"\nFirst correct answer found at step: {first_correct_step if first_correct_step is not None else float('inf')}")
 
     # Print per-step confidence breakdown at the end
-    if per_step_logs and verbose:
-        print(f"\n{'='*60}")
-        print("PER-STEP CONFIDENCE BREAKDOWN (decoded | remaining)")
-        print(f"{'='*60}")
-        for log in per_step_logs:
-            print(f"step {log['step']} (block {log['block']}):")
-            print(f"  top confidence: {log['decoded_conf']} {log['remaining_conf']}")
-            print(f"  entropy: {log['decoded_entropy']} {log['remaining_entropy']}")
-            if 'decoded_shannon_entropy' in log:
-                print(f"  shannon entropy: {log['decoded_shannon_entropy']} {log['remaining_shannon_entropy']}")
-        print(f"{'='*60}")
+    # if per_step_logs and verbose:
+    #     print(f"\n{'='*60}")
+    #     print("PER-STEP CONFIDENCE BREAKDOWN (decoded | remaining)")
+    #     print(f"{'='*60}")
+    #     for log in per_step_logs:
+    #         print(f"step {log['step']} (block {log['block']}):")
+    #         print(f"  top confidence: {log['decoded_conf']} {log['remaining_conf']}")
+    #         print(f"  entropy: {log['decoded_entropy']} {log['remaining_entropy']}")
+    #         if 'decoded_shannon_entropy' in log:
+    #             print(f"  shannon entropy: {log['decoded_shannon_entropy']} {log['remaining_shannon_entropy']}")
+    #     print(f"{'='*60}")
 
     # block_confidences: Final confidence scores for tokens that were actually decoded in each block
     return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features, initial_shannon_entropy

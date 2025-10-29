@@ -1083,6 +1083,196 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
     
     return training_samples
 
+def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None, save_to_file=True, disable_tqdm=False):
+    """
+    Greedy version: Use optimal block sizes from previous positions instead of AR.
+    
+    Instead of iterating through all curr_pos values (0,1,2,...,31) with AR for preceding tokens,
+    we jump ahead based on the optimal block_size found at each step.
+    
+    Key difference from augment_one_sample:
+        - AR version: manual_settings = {0:1, 1:1, 2:1, 3:1} for curr_pos=4
+        - Greedy version: manual_settings = {0:4} or {0:2, 1:2} depending on optimal block sizes
+    
+    Example:
+        curr_pos=0, step_num=0, optimal block_size=3 → next curr_pos=3, step_num=1, manual_settings={0:3}
+        curr_pos=3, step_num=1, optimal block_size=2 → next curr_pos=5, step_num=2, manual_settings={0:3, 1:2}
+        curr_pos=5, step_num=2, optimal block_size=5 → next curr_pos=10, step_num=3, manual_settings={0:3, 1:2, 2:5}
+    
+    Args:
+        model: The model to use for generation
+        tokenizer: Tokenizer for the model
+        device: Device to run on
+        prompt: Input prompt string (can be question only if instruction is provided)
+        model_args: Model arguments
+        gen_length: Generation length (default: 32)
+        base_block_length: Base block length (default: 2)
+        steps: Number of steps (default: 16)
+        correct_answer: Expected correct answer for checking correctness (optional)
+        break_after_answer_found: If True, stop augmentation after first answer_found=True (default: True)
+        instruction: Optional instruction to prepend to prompt. If provided, prompt becomes instruction + prompt.
+        save_to_file: If True, save to JSON/CSV files. If False, only return samples (default: True)
+        disable_tqdm: If True, disable tqdm progress bar (useful for parallel processing)
+    
+    Returns:
+        List of training samples, each containing features and block_size
+    """
+    print(f"\n🔄 Augmenting sample (GREEDY) with gen_length={gen_length}, base_block_length={base_block_length}, steps={steps}")
+    
+    # If instruction is provided, prepend it to the prompt
+    if instruction is not None:
+        prompt = instruction + prompt
+    
+    # Get the token ID for <eot_id> to check for early termination
+    eot_token_id = 126348  # Known <eot_id> token ID
+    print(f"Using EOT token ID: {eot_token_id}")
+    
+    # Verify the token ID is correct
+    try:
+        token_text = tokenizer.decode([eot_token_id])
+        print(f"Token ID {eot_token_id} decodes to: '{token_text}'")
+    except Exception as e:
+        print(f"Warning: Could not decode token ID {eot_token_id}: {e}")
+    
+    # Collect training samples
+    training_samples = []
+    manual_settings = {}
+    
+    # Track both token position and step/block number
+    curr_pos = 0  # Token position (0 to gen_length-1)
+    step_num = 0  # Block/step number (key for manual_settings)
+    
+    # Optional: use tqdm for progress tracking
+    pbar = None if disable_tqdm else tqdm(total=gen_length, desc="Processing positions", unit="tok", leave=False)
+    
+    while curr_pos < gen_length:
+        print(f"\n=== curr_pos = {curr_pos}, step_num = {step_num} ===")
+        print(f"manual_settings={manual_settings}")
+        
+        # For greedy mode: use base_block_length=1 so we get gen_length blocks,
+        # which allows manual_settings to work correctly for any step_num
+        # Pass step_num as curr_pos so generate_one_sample updates manual_settings[step_num]
+        sample = generate_one_sample(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            prompt=prompt,
+            model_args=model_args,
+            gen_length=gen_length,
+            base_block_length=1,  # Use 1 to get gen_length blocks for flexible manual_settings
+            steps=steps,
+            curr_pos=step_num,  # Pass step_num so manual_settings is keyed correctly
+            manual_settings=manual_settings,  # Let generate_one_sample update it directly
+            correct_answer=correct_answer,
+        )
+        
+        if sample:
+            current_block_size = sample.get('block_size', 1)
+            
+            # Note: position and position_relative will be fixed in the massage step before writing
+            
+            # Check if model has figured out the answer
+            answer_found = (current_block_size == (gen_length - curr_pos))
+            sample['answer_found'] = answer_found
+            
+            if answer_found:
+                print(f"🎯 Answer found at curr_pos={curr_pos}!")
+                print(f"   Block size {current_block_size} == remaining length {gen_length - curr_pos}")
+                print(f"   Model wants to decode all remaining tokens at once")
+                
+                # Add this sample first, then decide whether to break
+                training_samples.append(sample)
+                
+                if break_after_answer_found:
+                    print(f"🛑 Breaking data augmentation (break_after_answer_found=True)")
+                    if pbar:
+                        pbar.update(gen_length - curr_pos)
+                        pbar.close()
+                    break
+                else:
+                    print(f"➡️  Continuing data augmentation (break_after_answer_found=False)")
+            else:
+                training_samples.append(sample)
+            
+            # Check for <eot_id> token in the generated tokens
+            if eot_token_id is not None and sample.get('full_token_ids'):
+                full_token_ids = sample.get('full_token_ids', [])
+                full_token_texts = sample.get('full_token_texts', [])
+                
+                # Check if EOT appears within the current block
+                block_end = min(curr_pos + current_block_size, len(full_token_ids))
+                for pos in range(curr_pos, block_end):
+                    if full_token_ids[pos] == eot_token_id:
+                        token_text = full_token_texts[pos] if pos < len(full_token_texts) else "unknown"
+                        print(f"🛑 Found <eot_id> token (ID: {eot_token_id}, text: '{token_text}') at position {pos}")
+                        print(f"   Stopping data augmentation.")
+                        if pbar:
+                            pbar.update(gen_length - curr_pos)
+                            pbar.close()
+                        break
+                else:
+                    # No EOT found in this block, continue
+                    pass
+                
+                # If we found EOT in the inner loop, break outer loop
+                if pos < block_end and full_token_ids[pos] == eot_token_id:
+                    break
+            
+            # GREEDY: manual_settings was already updated by generate_one_sample
+            # (since we passed curr_pos=step_num, it set manual_settings[step_num]=current_block_size)
+            
+            # Update progress bar
+            if pbar:
+                pbar.update(current_block_size)
+            
+            # Jump ahead by the optimal block size
+            curr_pos += current_block_size
+            step_num += 1
+            
+        else:
+            # If no sample returned, move forward by 1 (fallback)
+            print(f"⚠️  No sample returned for curr_pos={curr_pos}, moving forward by 1")
+            # Note: generate_one_sample should have set manual_settings[step_num]=1
+            
+            if pbar:
+                pbar.update(1)
+            
+            curr_pos += 1
+            step_num += 1
+    
+    # Close progress bar if it wasn't closed earlier
+    if pbar:
+        pbar.close()
+    
+    print(f"\n✅ Generated {len(training_samples)} training samples (GREEDY)")
+    print(f"   Total steps taken: {step_num}")
+    print(f"   Speedup vs AR: {gen_length}/{step_num} = {gen_length/step_num:.2f}x")
+    
+    # Massage training_samples before writing: fix position and position_relative
+    # Build mapping from step_num to actual token position using manual_settings
+    step_to_position = {}
+    curr_token_pos = 0
+    for step in sorted(manual_settings.keys()):
+        step_to_position[step] = curr_token_pos
+        curr_token_pos += manual_settings[step]
+    
+    # Update each sample's position features
+    for step, sample in enumerate(training_samples):
+        if step in step_to_position and 'features' in sample and len(sample['features']) > 0:
+            actual_position = step_to_position[step]
+            feature_row = sample['features'][0]
+            # feature_row: [confidence, entropy, position, token_id, token_text, position_relative, ...]
+            feature_row[2] = actual_position  # position
+            feature_row[5] = round(actual_position / gen_length, 4)  # position_relative
+    
+    # Save to JSON and CSV files (only if save_to_file is True)
+    if save_to_file:
+        write_to_json_csv(training_samples, 
+                          json_output_path="./data/sft_training_samples_greedy.json",
+                          csv_output_path="./data/sft_training_samples_greedy.csv")
+    
+    return training_samples
+
 @torch.no_grad()
 def generate_custom_batch(
     model, tokenizer, prompts, steps=128, gen_length=128,
