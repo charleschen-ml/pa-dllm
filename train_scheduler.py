@@ -99,6 +99,7 @@ def main(use_wandb=True):
     # CONFIGURATION
     # ========================================
     USE_REGRESSION = True  # Set to True for regression, False for classification
+    FILTER_BY_ANSWER_FOUND = False  # Set to True to filter out answer_found==True samples
     
     # ========================================
     # HYPERPARAMETERS - TUNE THESE!
@@ -167,8 +168,8 @@ def main(use_wandb=True):
     df = pd.read_csv(DATA_PATH)
     print(f"✅ Loaded {len(df)} samples")
     
-    # Filter out samples where answer was already found
-    if 'answer_found' in df.columns:
+    # Filter out samples where answer was already found (optional)
+    if FILTER_BY_ANSWER_FOUND and 'answer_found' in df.columns:
         before_count = len(df)
         df = df[df['answer_found'] == False].reset_index(drop=True)
         after_count = len(df)

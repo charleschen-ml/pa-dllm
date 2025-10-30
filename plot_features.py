@@ -13,6 +13,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+# Filtering options
+FILTER_BY_ANSWER_FOUND = False  # Set to True to filter out answer_found==True samples
+FILTER_BY_POSITION_RELATIVE = False  # Set to True to filter by position_relative range
+
+# Position filtering bounds (only used if FILTER_BY_POSITION_RELATIVE=True)
+LOWER_BOUND = 0.3  # Minimum position_relative (e.g., 0.0 = start, 1.0 = end)
+UPPER_BOUND = 0.7  # Maximum position_relative
+
+# Label column to analyze
+LABEL_COLUMN = 'block_size_rel'  # Options: 'block_size' or 'block_size_rel'
+# ============================================================================
+
 def plot_label_histogram(csv_path):
     """Plot histogram of labels (block_size) and save to output directory"""
     
@@ -31,12 +46,17 @@ def plot_label_histogram(csv_path):
     
     print(f"✅ Loaded {len(df)} samples")
     
-    # Filter by answer_found=False
-    df = df[df['answer_found'] == False]
-    print(f"🔍 Filtered to {len(df)} samples where answer_found=False")
+    # Apply filters based on configuration
+    if FILTER_BY_ANSWER_FOUND and 'answer_found' in df.columns:
+        df = df[df['answer_found'] == False]
+        print(f"🔍 Filtered to {len(df)} samples where answer_found=False")
     
-    # Get the labels (block_size)
-    labels = df['block_size']
+    if FILTER_BY_POSITION_RELATIVE and 'position_relative' in df.columns:
+        df = df[(df['position_relative'] >= LOWER_BOUND) & (df['position_relative'] <= UPPER_BOUND)]
+        print(f"🔍 Filtered to {len(df)} samples where position_relative in [{LOWER_BOUND}, {UPPER_BOUND}]")
+    
+    # Get the labels using configured column
+    labels = df[LABEL_COLUMN]
     
     # Calculate statistics
     mean_val = labels.mean()
@@ -119,13 +139,17 @@ def plot_features_vs_labels(csv_path):
     print(f"{'='*80}")
     print(f"📊 Loading data from: {csv_path}")
     df = pd.read_csv(csv_path)
-
-    # manual experiment: filter by answer_found
-    df = df[df['answer_found'] == False] # always do this
-    # df = df[(df['position_relative'] > 0.7)]
-    # df = df[(df['position_relative'] > 0.3) & (df['position_relative'] < 0.7)] # filter for middle positions
     
     print(f"✅ Loaded {len(df)} samples")
+    
+    # Apply filters based on configuration
+    if FILTER_BY_ANSWER_FOUND and 'answer_found' in df.columns:
+        df = df[df['answer_found'] == False]
+        print(f"🔍 Filtered to {len(df)} samples where answer_found=False")
+    
+    if FILTER_BY_POSITION_RELATIVE and 'position_relative' in df.columns:
+        df = df[(df['position_relative'] >= LOWER_BOUND) & (df['position_relative'] <= UPPER_BOUND)]
+        print(f"🔍 Filtered to {len(df)} samples where position_relative in [{LOWER_BOUND}, {UPPER_BOUND}]")
     print(f"Columns: {list(df.columns)}")
     
     # Define the features to plot (excluding non-numeric and identifier columns)
@@ -144,12 +168,9 @@ def plot_features_vs_labels(csv_path):
     available_features = [col for col in feature_columns if col in df.columns]
     print(f"📈 Analyzing {len(available_features)} features: {available_features}")
     
-    # Label column
-    # label_column = 'block_size'
-    label_column = 'block_size_rel' # relative block size (block_size / remaining_length)
-    
-    if label_column not in df.columns:
-        print(f"❌ Label column '{label_column}' not found in data")
+    # Use configured label column
+    if LABEL_COLUMN not in df.columns:
+        print(f"❌ Label column '{LABEL_COLUMN}' not found in data")
         return
     
     # Skip individual plots (too many features now - 30 total)
@@ -163,7 +184,7 @@ def plot_features_vs_labels(csv_path):
     
     for feature in available_features:
         x = df[feature].dropna()
-        y = df.loc[x.index, label_column]
+        y = df.loc[x.index, LABEL_COLUMN]
         
         if len(x) > 1:
             correlation = np.corrcoef(x, y)[0, 1]
@@ -202,8 +223,8 @@ def plot_features_vs_labels(csv_path):
     bars = plt.barh(range(len(sorted_features)), sorted_correlations, color=colors, alpha=0.7)
     
     plt.yticks(range(len(sorted_features)), sorted_features)
-    plt.xlabel(f'Correlation with {label_column}')
-    plt.title(f'Feature Correlations with {label_column}')
+    plt.xlabel(f'Correlation with {LABEL_COLUMN}')
+    plt.title(f'Feature Correlations with {LABEL_COLUMN}')
     plt.grid(True, alpha=0.3, axis='x')
     
     # Add correlation values on bars
