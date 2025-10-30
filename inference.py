@@ -1199,6 +1199,7 @@ def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_
                 
                 # Add this sample first, then decide whether to break
                 training_samples.append(sample)
+                step_num += 1  # Count this step before potentially breaking
                 
                 if break_after_answer_found:
                     print(f"🛑 Breaking data augmentation (break_after_answer_found=True)")
@@ -1210,6 +1211,7 @@ def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_
                     print(f"➡️  Continuing data augmentation (break_after_answer_found=False)")
             else:
                 training_samples.append(sample)
+                step_num += 1  # Count this step
             
             # Check for <eot_id> token in the generated tokens
             if eot_token_id is not None and sample.get('full_token_ids'):
@@ -1244,7 +1246,6 @@ def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_
             
             # Jump ahead by the optimal block size
             curr_pos += current_block_size
-            step_num += 1
             
         else:
             # If no sample returned, move forward by 1 (fallback)
@@ -1255,7 +1256,7 @@ def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_
                 pbar.update(1)
             
             curr_pos += 1
-            step_num += 1
+            step_num += 1  # Still count this as a step attempt
     
     # Close progress bar if it wasn't closed earlier
     if pbar:
@@ -1263,7 +1264,10 @@ def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_
     
     print(f"\n✅ Generated {len(training_samples)} training samples (GREEDY)")
     print(f"   Total steps taken: {step_num}")
-    print(f"   Speedup vs AR: {gen_length}/{step_num} = {gen_length/step_num:.2f}x")
+    if step_num > 0:
+        print(f"   Speedup vs AR: {gen_length}/{step_num} = {gen_length/step_num:.2f}x")
+    else:
+        print(f"   Speedup vs AR: N/A (no steps taken)")
     
     # Massage training_samples before writing: fix position and position_relative
     # Build mapping from step_num to actual token position using manual_settings
@@ -1688,30 +1692,39 @@ def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_lengt
             question = instruction + question
         prompt = question
         
-        # Generate training samples for this question (all print statements suppressed)
-        question_samples = augment_one_sample_dispatch(
-            use_greedy=use_greedy,
-            model=model,
-            tokenizer=tokenizer,
-            device=device,
-            prompt=prompt,
-            model_args=model_args,
-            gen_length=gen_length,
-            base_block_length=base_block_length,
-            steps=steps,
-            correct_answer=correct_answer,
-            break_after_answer_found=break_after_answer_found,
-            save_to_file=False,
-            disable_tqdm=True  # CRITICAL: Disable tqdm to avoid cross-process terminal locks
-        )
+        print(f"[GPU {gpu_id}] Processing question {local_idx+1}/{len(df_subset)} (row_idx={row_idx}, answer={correct_answer})", file=sys.stderr)
         
-        # Add question metadata
-        for sample in question_samples:
-            sample['question_id'] = row_idx
-            sample['question'] = question
-        
-        worker_samples.extend(question_samples)
-        print(f"[GPU {gpu_id}] Question {local_idx+1}/{len(df_subset)} done ({len(question_samples)} samples)", file=sys.stderr)
+        try:
+            # Generate training samples for this question (all print statements suppressed)
+            question_samples = augment_one_sample_dispatch(
+                use_greedy=use_greedy,
+                model=model,
+                tokenizer=tokenizer,
+                device=device,
+                prompt=prompt,
+                model_args=model_args,
+                gen_length=gen_length,
+                base_block_length=base_block_length,
+                steps=steps,
+                correct_answer=correct_answer,
+                break_after_answer_found=break_after_answer_found,
+                save_to_file=False,
+                disable_tqdm=True  # CRITICAL: Disable tqdm to avoid cross-process terminal locks
+            )
+            
+            # Add question metadata
+            for sample in question_samples:
+                sample['question_id'] = row_idx
+                sample['question'] = question
+            
+            worker_samples.extend(question_samples)
+            print(f"[GPU {gpu_id}] Question {local_idx+1}/{len(df_subset)} done ({len(question_samples)} samples)", file=sys.stderr)
+        except Exception as e:
+            print(f"❌ [GPU {gpu_id}] ERROR on question {local_idx+1}/{len(df_subset)} (row_idx={row_idx})", file=sys.stderr)
+            print(f"   Question: {question[:100]}...", file=sys.stderr)
+            print(f"   Answer: {correct_answer}", file=sys.stderr)
+            print(f"   Error: {e}", file=sys.stderr)
+            raise  # Re-raise to see full traceback
     
     end_time = time.time()
     elapsed = end_time - start_time

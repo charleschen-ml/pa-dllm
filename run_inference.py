@@ -36,8 +36,8 @@ if __name__ == '__main__':
     ########################################################
     USE_GREEDY = True  # True: use greedy mode, False: use AR mode
     USE_PARALLEL = True  # Set to False for sequential mode (needed for batch inference)
-    NUM_GPUS = 2  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = 2  # Number of questions to process (None = process all questions in CSV)
+    NUM_GPUS = 4  # Only used if USE_PARALLEL=True
+    NUM_QUESTIONS = None  # Number of questions to process (None = process all questions in CSV)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -117,7 +117,7 @@ if __name__ == '__main__':
     # Create dataset of questions answered correctly
     ########################################################
     # # Load gsm8k
-    # df = load_gsm8k(start=0, end=100)
+    # df = load_gsm8k(start=0, end=2000)
 
     # # Run batch inference
     # df = run_inference_batch(
