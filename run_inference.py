@@ -34,10 +34,10 @@ if __name__ == '__main__':
     ########################################################
     # CONFIGURATION: Choose mode
     ########################################################
-    USE_GREEDY = True  # True: use greedy mode, False: use AR mode
-    USE_PARALLEL = True  # Set to False for sequential mode (needed for batch inference)
+    USE_GREEDY = True  # True: use greedy mode when generating training samples, False: use AR mode
+    USE_PARALLEL = False  # Set to False for sequential mode (needed for batch inference)
     NUM_GPUS = 4  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = None  # Number of questions to process (None = process all questions in CSV)
+    NUM_QUESTIONS = 1  # Number of questions to process (None = process all questions in CSV)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -208,240 +208,239 @@ if __name__ == '__main__':
     ########################################################
     # Augment multiple samples: Sequential or Parallel
     ########################################################
-    start_time = time.time()
+    # start_time = time.time()
     
-    # Determine how many questions to process
-    csv_path = "./data/gsm8k_correct.csv"
-    df_temp = pd.read_csv(csv_path)
-    total_questions = len(df_temp)
-    print(f"📊 Found {total_questions} questions in {csv_path}")
+    # # Determine how many questions to process
+    # csv_path = "./data/gsm8k_correct.csv"
+    # df_temp = pd.read_csv(csv_path)
+    # total_questions = len(df_temp)
+    # print(f"📊 Found {total_questions} questions in {csv_path}")
     
-    # Use NUM_QUESTIONS if specified, otherwise process all
-    questions_to_process = NUM_QUESTIONS if NUM_QUESTIONS is not None else total_questions
-    print(f"🎯 Processing {questions_to_process} questions")
+    # # Use NUM_QUESTIONS if specified, otherwise process all
+    # questions_to_process = NUM_QUESTIONS if NUM_QUESTIONS is not None else total_questions
+    # print(f"🎯 Processing {questions_to_process} questions")
     
-    mode_str = "GREEDY" if USE_GREEDY else "AR"
-    if USE_PARALLEL:
-        print(f"🚀 Starting PARALLEL mode with {NUM_GPUS} GPUs ({mode_str} mode)...")
-        from inference import augment_multiple_samples_parallel
+    # mode_str = "GREEDY" if USE_GREEDY else "AR"
+    # if USE_PARALLEL:
+    #     print(f"🚀 Starting PARALLEL mode with {NUM_GPUS} GPUs ({mode_str} mode)...")
+    #     from inference import augment_multiple_samples_parallel
         
-        all_training_samples = augment_multiple_samples_parallel(
-            model_args=model_args,
-            csv_path=csv_path,
-            num_questions=questions_to_process,
-            gen_length=32,
-            base_block_length=1,
-            steps=32,
-            break_after_answer_found=True,
-            output_json_path="./data/sft_training_samples_multi_greedy_parallel.json",
-            output_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
-            instruction=instruction,
-            num_gpus=NUM_GPUS,
-            use_greedy=USE_GREEDY
-        )
-    else:
-        print(f"🚀 Starting SEQUENTIAL mode ({mode_str} mode)...")
-        all_training_samples = augment_multiple_samples(
-            model=model,
-            tokenizer=tokenizer,
-            device=device,
-            model_args=model_args,
-            csv_path=csv_path,
-            num_questions=questions_to_process,
-            gen_length=32,
-            base_block_length=1,
-            steps=32,
-            break_after_answer_found=True,
-            output_json_path="./data/sft_training_samples_multi_greedy.json",
-            output_csv_path="./data/sft_training_samples_multi_greedy.csv",
-            instruction=instruction,
-            use_greedy=USE_GREEDY
-        )
+    #     all_training_samples = augment_multiple_samples_parallel(
+    #         model_args=model_args,
+    #         csv_path=csv_path,
+    #         num_questions=questions_to_process,
+    #         gen_length=32,
+    #         base_block_length=1,
+    #         steps=32,
+    #         break_after_answer_found=True,
+    #         output_json_path="./data/sft_training_samples_multi_greedy_parallel.json",
+    #         output_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
+    #         instruction=instruction,
+    #         num_gpus=NUM_GPUS,
+    #         use_greedy=USE_GREEDY
+    #     )
+    # else:
+    #     print(f"🚀 Starting SEQUENTIAL mode ({mode_str} mode)...")
+    #     all_training_samples = augment_multiple_samples(
+    #         model=model,
+    #         tokenizer=tokenizer,
+    #         device=device,
+    #         model_args=model_args,
+    #         csv_path=csv_path,
+    #         num_questions=questions_to_process,
+    #         gen_length=32,
+    #         base_block_length=1,
+    #         steps=32,
+    #         break_after_answer_found=True,
+    #         output_json_path="./data/sft_training_samples_multi_greedy.json",
+    #         output_csv_path="./data/sft_training_samples_multi_greedy.csv",
+    #         instruction=instruction,
+    #         use_greedy=USE_GREEDY
+    #     )
     
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"\n⏱️  TIMING REPORT:")
-    print(f"  📊 Total samples generated: {len(all_training_samples)}")
-    print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
-    print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
-    if USE_PARALLEL:
-        print(f"  🚀 Used {NUM_GPUS} GPUs in parallel!")
-        print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
+    # end_time = time.time()
+    # elapsed_time = end_time - start_time
+    # print(f"\n⏱️  TIMING REPORT:")
+    # print(f"  📊 Total samples generated: {len(all_training_samples)}")
+    # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+    # print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
+    # if USE_PARALLEL:
+    #     print(f"  🚀 Used {NUM_GPUS} GPUs in parallel!")
+    #     print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
 
     ########################################################
     # Run inference with XGBoost scheduler (CHARLES)
     ########################################################
-    # print("="*80)
-    # print("🚀 CHARLES: XGBoost-Guided Dynamic Block Size Inference")
-    # print("="*80)
+    print("="*80)
+    print("🚀 CHARLES: XGBoost-Guided Dynamic Block Size Inference")
+    print("="*80)
     
-    # # Load XGBoost scheduler
-    # import xgboost as xgb
-    # SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model
-    # USE_REGRESSION = True  # True for regression, False for classification
+    # Load XGBoost scheduler
+    import xgboost as xgb
+    SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model
+    USE_REGRESSION = True  # True for regression, False for classification
     
-    # print(f"📥 Loading XGBoost scheduler from: {SCHEDULER_PATH}")
-    # scheduler = xgb.XGBRegressor() if USE_REGRESSION else xgb.XGBClassifier()
-    # scheduler.load_model(SCHEDULER_PATH)
-    # print(f"✅ Scheduler loaded ({'Regression' if USE_REGRESSION else 'Classification'} model)")
+    print(f"📥 Loading XGBoost scheduler from: {SCHEDULER_PATH}")
+    scheduler = xgb.XGBRegressor() if USE_REGRESSION else xgb.XGBClassifier()
+    scheduler.load_model(SCHEDULER_PATH)
+    print(f"✅ Scheduler loaded ({'Regression' if USE_REGRESSION else 'Classification'} model)")
     
-    # # Generation settings
-    # GEN_LENGTH = 32
-    # STEPS = 32  # Not used in dynamic version, kept for compatibility
-    # TEMPERATURE = 0.
-    # CFG_SCALE = 0.
-    # REMASKING = 'low_confidence'
-    # BLOCK_SIZE_OFFSET = 4  # Conservative offset: subtract from predicted block_size (0=no offset)
+    # Generation settings
+    GEN_LENGTH = 32
+    STEPS = 32  # Not used in dynamic version, kept for compatibility
+    TEMPERATURE = 0.
+    CFG_SCALE = 0.
+    REMASKING = 'low_confidence'
+    BLOCK_SIZE_OFFSET = 0  # Conservative offset: subtract from predicted block_size (0=no offset)
     
-    # # Load all questions from gsm8k_correct.csv
-    # df_questions = pd.read_csv("./data/gsm8k_correct.csv")
+    # Load all questions from gsm8k_correct.csv
+    df_questions = pd.read_csv("./data/gsm8k_correct.csv")
     
-    # # Limit to NUM_QUESTIONS if specified
-    # if NUM_QUESTIONS is not None:
-    #     df_questions = df_questions.head(NUM_QUESTIONS)
+    # Limit to NUM_QUESTIONS if specified
+    if NUM_QUESTIONS is not None:
+        df_questions = df_questions.head(NUM_QUESTIONS)
     
-    # print(f"\n{'='*80}")
-    # print("📊 GENERATION SETTINGS")
-    # print(f"{'='*80}")
-    # print(f"  Generation length: {GEN_LENGTH}")
-    # print(f"  Temperature: {TEMPERATURE}")
-    # print(f"  CFG scale: {CFG_SCALE}")
-    # print(f"  Remasking: {REMASKING}")
-    # print(f"  Block size offset: {BLOCK_SIZE_OFFSET} (conservative adjustment)")
-    # print(f"  Total questions: {len(df_questions)}")
-    # print(f"{'='*80}\n")
+    print(f"\n{'='*80}")
+    print("📊 GENERATION SETTINGS")
+    print(f"{'='*80}")
+    print(f"  Generation length: {GEN_LENGTH}")
+    print(f"  Temperature: {TEMPERATURE}")
+    print(f"  CFG scale: {CFG_SCALE}")
+    print(f"  Remasking: {REMASKING}")
+    print(f"  Block size offset: {BLOCK_SIZE_OFFSET} (conservative adjustment)")
+    print(f"  Total questions: {len(df_questions)}")
+    print(f"{'='*80}\n")
     
-    # # Store results
-    # results = []
-    # total_start_time = time.time()
+    # Store results
+    results = []
+    total_start_time = time.time()
     
-    # # Loop through all questions
-    # for idx, row in df_questions.iterrows():
-    #     question = row['question']
-    #     correct_answer = int(row['answer_numerical'])
+    # Loop through all questions
+    for idx, row in df_questions.iterrows():
+        question = row['question']
+        correct_answer = int(row['answer_numerical'])
         
-    #     if instruction is not None:
-    #         question = instruction + question
-    #     prompt = question
+        if instruction is not None:
+            question = instruction + question
+        prompt = question
         
-    #     print(f"\n{'='*80}")
-    #     print(f"📝 Question {idx+1}/{len(df_questions)}")
-    #     print(f"{'='*80}")
-    #     print(f"Question: {prompt}")
-    #     print(f"Expected answer: {correct_answer}\n")
+        print(f"\n{'='*80}")
+        print(f"📝 Question {idx+1}/{len(df_questions)}")
+        print(f"{'='*80}")
+        print(f"Question: {prompt}")
+        print(f"Expected answer: {correct_answer}\n")
 
-    #     # Add special tokens for the Instruct model (not required for base model)
-    #     m = [{"role": "user", "content": prompt}, ]
-    #     prompt_formatted = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-    #     input_ids = tokenizer(prompt_formatted)['input_ids']
-    #     input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
+        # Add special tokens for the Instruct model (not required for base model)
+        m = [{"role": "user", "content": prompt}, ]
+        prompt_formatted = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        input_ids = tokenizer(prompt_formatted)['input_ids']
+        input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
         
-    #     # Run generation with XGBoost scheduler
-    #     print("🎯 Starting dynamic block size generation (CHARLES)...")
-    #     start_time = time.time()
+        # Run generation with XGBoost scheduler
+        print("🎯 Starting dynamic block size generation (CHARLES)...")
+        start_time = time.time()
         
-    #     out, num_steps = generate_charles(
-    #         model=model,
-    #         tokenizer=tokenizer,
-    #         prompt=input_ids,
-    #         scheduler=scheduler,
-    #         steps=STEPS,
-    #         gen_length=GEN_LENGTH,
-    #         block_length=1,  # Fallback if scheduler is None
-    #         temperature=TEMPERATURE,
-    #         cfg_scale=CFG_SCALE,
-    #         remasking=REMASKING,
-    #         expected_answer=correct_answer,
-    #         use_regression=USE_REGRESSION,
-    #         block_size_offset=BLOCK_SIZE_OFFSET
-    #     )
+        out, num_steps = generate_charles(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=input_ids,
+            scheduler=scheduler,
+            steps=STEPS,
+            gen_length=GEN_LENGTH,
+            block_length=1,  # Fallback if scheduler is None
+            temperature=TEMPERATURE,
+            cfg_scale=CFG_SCALE,
+            remasking=REMASKING,
+            expected_answer=correct_answer,
+            use_regression=USE_REGRESSION,
+            block_size_offset=BLOCK_SIZE_OFFSET
+        )
         
-    #     end_time = time.time()
-    #     generation_time = end_time - start_time
+        end_time = time.time()
+        generation_time = end_time - start_time
         
-    #     # Calculate speedup vs autoregressive (AR takes gen_length steps)
-    #     ar_steps = GEN_LENGTH  # Autoregressive = 1 token per step = gen_length steps
-    #     speedup = ar_steps / num_steps if num_steps > 0 else 0
+        # Calculate speedup vs autoregressive (AR takes gen_length steps)
+        ar_steps = GEN_LENGTH  # Autoregressive = 1 token per step = gen_length steps
+        speedup = ar_steps / num_steps if num_steps > 0 else 0
         
-    #     # Decode output
-    #     generated_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        # Decode output
+        generated_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
         
-    #     print(f"\n{'='*80}")
-    #     print("✅ GENERATION COMPLETE!")
-    #     print(f"{'='*80}")
-    #     print(f"\n📄 Generated Answer:\n{generated_text}")
+        print(f"\n{'='*80}")
+        print("✅ GENERATION COMPLETE!")
+        print(f"{'='*80}")
+        print(f"\n📄 Generated Answer:\n{generated_text}")
         
-    #     # Extract numerical answer
-    #     from generate import extract_numerical
-    #     predicted_answer = extract_numerical(generated_text)
-    #     is_correct = (predicted_answer == correct_answer) if predicted_answer is not None else False
+        # Extract numerical answer
+        from generate import extract_numerical
+        predicted_answer = extract_numerical(generated_text)
+        is_correct = (predicted_answer == correct_answer) if predicted_answer is not None else False
         
-    #     print(f"\n{'='*80}")
-    #     print("📊 RESULTS")
-    #     print(f"{'='*80}")
-    #     print(f"  Expected answer: {correct_answer}")
-    #     print(f"  Predicted answer: {predicted_answer}")
-    #     print(f"  Correct: {'✅ YES' if is_correct else '❌ NO'}")
-    #     print(f"\n⚡ EFFICIENCY:")
-    #     print(f"  AR steps (baseline): {ar_steps}")
-    #     print(f"  CHARLES steps: {num_steps}")
-    #     print(f"  Speedup: {speedup:.2f}x")
-    #     print(f"\n⏱️  Generation time: {generation_time:.2f} seconds")
-    #     print(f"  Tokens per second: {GEN_LENGTH/generation_time:.2f}")
-    #     print(f"{'='*80}\n")
+        print(f"\n{'='*80}")
+        print("📊 RESULTS")
+        print(f"{'='*80}")
+        print(f"  Expected answer: {correct_answer}")
+        print(f"  Predicted answer: {predicted_answer}")
+        print(f"  Correct: {'✅ YES' if is_correct else '❌ NO'}")
+        print(f"\n⚡ EFFICIENCY:")
+        print(f"  AR steps (baseline): {ar_steps}")
+        print(f"  CHARLES steps: {num_steps}")
+        print(f"  Speedup: {speedup:.2f}x")
+        print(f"\n⏱️  Generation time: {generation_time:.2f} seconds")
+        print(f"  Tokens per second: {GEN_LENGTH/generation_time:.2f}")
+        print(f"{'='*80}\n")
         
-    #     # Store results
-    #     results.append({
-    #         'question': row['question'],
-    #         'correct_answer': correct_answer,
-    #         'predicted_answer': predicted_answer,
-    #         'generated_text': generated_text,
-    #         'is_correct': is_correct,
-    #         'ar_steps': ar_steps,
-    #         'num_steps': num_steps,
-    #         'speedup': speedup,
-    #         'generation_time': generation_time
-    #     })
+        # Store results
+        results.append({
+            'question': row['question'],
+            'correct_answer': correct_answer,
+            'predicted_answer': predicted_answer,
+            'generated_text': generated_text,
+            'is_correct': is_correct,
+            'ar_steps': ar_steps,
+            'num_steps': num_steps,
+            'speedup': speedup,
+            'generation_time': generation_time
+        })
     
-    # # Calculate overall statistics
-    # total_end_time = time.time()
-    # total_elapsed_time = total_end_time - total_start_time
+    # Calculate overall statistics
+    total_end_time = time.time()
+    total_elapsed_time = total_end_time - total_start_time
     
-    # results_df = pd.DataFrame(results)
-    # num_correct = results_df['is_correct'].sum()
-    # accuracy = num_correct / len(results_df) * 100
+    results_df = pd.DataFrame(results)
+    num_correct = results_df['is_correct'].sum()
+    accuracy = num_correct / len(results_df) * 100
     
-    # # Calculate average speedup for correct answers only
-    # correct_df = results_df[results_df['is_correct'] == True]
-    # if len(correct_df) > 0:
-    #     avg_speedup_correct = correct_df['speedup'].mean()
-    #     avg_ar_steps = correct_df['ar_steps'].mean()
-    #     avg_num_steps = correct_df['num_steps'].mean()
-    #     avg_generation_time = correct_df['generation_time'].mean()
-    # else:
-    #     avg_speedup_correct = 0
-    #     avg_ar_steps = 0
-    #     avg_num_steps = 0
-    #     avg_generation_time = 0
+    # Calculate average speedup for correct answers only
+    correct_df = results_df[results_df['is_correct'] == True]
+    if len(correct_df) > 0:
+        avg_speedup_correct = correct_df['speedup'].mean()
+        avg_ar_steps = correct_df['ar_steps'].mean()
+        avg_num_steps = correct_df['num_steps'].mean()
+        avg_generation_time = correct_df['generation_time'].mean()
+    else:
+        avg_speedup_correct = 0
+        avg_ar_steps = 0
+        avg_num_steps = 0
+        avg_generation_time = 0
     
-    # print(f"\n{'='*80}")
-    # print("📊 OVERALL RESULTS")
-    # print(f"{'='*80}")
-    # print(f"  Total questions: {len(results_df)}")
-    # print(f"  Correct answers: {num_correct}/{len(results_df)}")
-    # print(f"  Accuracy: {accuracy:.2f}%")
-    # print(f"\n⚡ EFFICIENCY (for correct answers only):")
-    # print(f"  Average AR steps (baseline): {avg_ar_steps:.1f}")
-    # print(f"  Average CHARLES steps: {avg_num_steps:.1f}")
-    # print(f"  Average speedup: {avg_speedup_correct:.2f}x")
-    # print(f"\n⏱️  TIMING:")
-    # print(f"  Average generation time: {avg_generation_time:.2f} seconds")
-    # print(f"  Total wall time: {total_elapsed_time:.2f} seconds ({total_elapsed_time/60:.1f} minutes)")
-    # print(f"  Average wall time per question: {total_elapsed_time/len(results_df):.2f} seconds")
-    # print(f"{'='*80}\n")
+    print(f"\n{'='*80}")
+    print("📊 OVERALL RESULTS")
+    print(f"{'='*80}")
+    print(f"  Total questions: {len(results_df)}")
+    print(f"  Correct answers: {num_correct}/{len(results_df)}")
+    print(f"  Accuracy: {accuracy:.2f}%")
+    print(f"\n⚡ EFFICIENCY (for correct answers only):")
+    print(f"  Average AR steps (baseline): {avg_ar_steps:.1f}")
+    print(f"  Average CHARLES steps: {avg_num_steps:.1f}")
+    print(f"  Average speedup: {avg_speedup_correct:.2f}x")
+    print(f"\n⏱️  TIMING:")
+    print(f"  Average generation time: {avg_generation_time:.2f} seconds")
+    print(f"  Total wall time: {total_elapsed_time:.2f} seconds ({total_elapsed_time/60:.1f} minutes)")
+    print(f"  Average wall time per question: {total_elapsed_time/len(results_df):.2f} seconds")
+    print(f"{'='*80}\n")
     
-    # # Save results to CSV
-    # output_path = "./output/charles_inference_results.csv"
-    # results_df.to_csv(output_path, index=False)
-    # print(f"💾 Results saved to: {output_path}")
-
+    # Save results to CSV
+    output_path = "./output/charles_inference_results.csv"
+    results_df.to_csv(output_path, index=False)
+    print(f"💾 Results saved to: {output_path}")

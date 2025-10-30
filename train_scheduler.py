@@ -113,8 +113,8 @@ def main(use_wandb=True):
         'learning_rate': 0.05,    # Learning rate (lower = slower, more careful). Try: 0.01, 0.05, 0.1, 0.3
         
         # Regularization (prevents overfitting) - uncomment to use
-        'subsample': 0.8,         # Fraction of samples per tree
-        'colsample_bytree': 0.8,  # Fraction of features per tree
+        # 'subsample': 0.8,         # Fraction of samples per tree
+        # 'colsample_bytree': 0.8,  # Fraction of features per tree
         # 'min_child_weight': 5,    # Minimum samples in leaf (higher = smoother)
         # 'gamma': 1,               # Minimum loss reduction to split
         # 'reg_alpha': 0.5,           # L1 regularization
@@ -137,6 +137,7 @@ def main(use_wandb=True):
     
     # Data configuration
     DATA_PATH = "./data/sft_training_samples_multi_greedy_parallel.csv"
+    # DATA_PATH = "./data/sft_training_samples_greedy.csv"
     MODEL_PATH = "./cache/block_size_scheduler.json"
     NUM_SAMPLES = None  # Set to N to use only first N samples (for overfitting experiments), or None for all samples
     TEST_SIZE = 0.15   # 15% for final test (completely unseen)

@@ -633,7 +633,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     # We'll use the confidence values from generate_custom instead of reimplementing
     print(f"\n=== Using confidence from generate_custom for curr_pos={curr_pos} ===")
     autoregressive_confidence = []
-    autoregressive_entropy = []
+    autoregressive_entropy = []  # Will store Shannon entropy (not regular entropy)
 
     # Single token greedy search: optimize only the specified position
     num_blocks = gen_length // base_block_length
@@ -681,12 +681,19 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             stored_ar_tokens = ar_context_tokens.clone()
             stored_additional_features = additional_features.copy() if additional_features else {}
             
-            # Extract the forward-looking confidence from initial_confidence
-            if initial_confidence and len(initial_confidence) > curr_pos:
-                autoregressive_confidence = initial_confidence[curr_pos:]
-                autoregressive_entropy = initial_entropy[curr_pos:] if initial_entropy and len(initial_entropy) > curr_pos else []
-                print(f"📝 Extracted {len(autoregressive_confidence)} forward-looking confidence values from curr_pos={curr_pos}")
+            # Convert curr_pos (step_num) to actual token position
+            # For greedy mode: curr_pos is step number, need to calculate token position
+            token_position = sum(manual_settings.get(i, base_block_length) for i in range(curr_pos))
+            
+            # Extract the forward-looking confidence/entropy from token_position (NOT curr_pos!)
+            # initial_confidence/entropy are indexed by token position, so we need to slice from token_position
+            # NOTE: Use Shannon entropy instead of regular entropy!
+            if initial_confidence and len(initial_confidence) > token_position:
+                autoregressive_confidence = initial_confidence[token_position:]
+                autoregressive_entropy = initial_shannon_entropy[token_position:] if initial_shannon_entropy and len(initial_shannon_entropy) > token_position else []
+                print(f"📝 Extracted {len(autoregressive_confidence)} forward-looking confidence values from token_position={token_position} (curr_pos step={curr_pos})")
                 print(f"    Confidence values: {autoregressive_confidence[:5]}...")  # Show first 5
+                print(f"    Shannon entropy values: {autoregressive_entropy[:5]}...")  # Show first 5
             else:
                 autoregressive_confidence = []
                 autoregressive_entropy = []
@@ -792,11 +799,17 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     # - Comparative: top4/8_conf_min (best tokens), next4/8_conf_min (sequential tokens)
     # This allows analysis of which tokens are suitable for parallel vs sequential decoding.
     
+    # Convert curr_pos (step_num) to actual token position using manual_settings
+    # For greedy mode: curr_pos is step number, need to calculate token position
+    # Calculate this ONCE and reuse throughout the function
+    token_position = sum(manual_settings.get(i, base_block_length) for i in range(curr_pos))
+    
     # Extract features for the current position curr_pos (only one feature row per curr_pos)
     features = []
     if len(autoregressive_confidence) > 0 and len(autoregressive_entropy) > 0:
-        # The position we're analyzing is curr_pos (the current token to be decoded)
-        position = curr_pos
+        
+        # The position we're analyzing is the token position (not step number!)
+        position = token_position
         
         # In autoregressive_confidence, index 0 corresponds to position curr_pos
         confidence_idx = 0  # Index in autoregressive confidence list for curr_pos
@@ -811,13 +824,14 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             if stored_ar_tokens is not None:
                 # Extract token_id from the AR context + top-1 predictions
                 gen_start_idx = input_ids.shape[1]  # Start of generation
-                token_pos_in_gen = curr_pos  # Position within generation
+                token_pos_in_gen = token_position  # Position within generation (use token position!)
                 if gen_start_idx + token_pos_in_gen < stored_ar_tokens.shape[1]:
                     token_id = stored_ar_tokens[0, gen_start_idx + token_pos_in_gen].item()
                     token_text = tokenizer.decode([token_id], skip_special_tokens=False)
             
-            # Get additional features for this position (calculated from curr_pos perspective)
-            additional_feats = stored_additional_features.get(curr_pos, {}) if stored_additional_features else {}
+            # Get additional features for this position (calculated from token_position perspective)
+            # IMPORTANT: additional_features is now keyed by token position (not step number!)
+            additional_feats = stored_additional_features.get(token_position, {}) if stored_additional_features else {}
             
             # Calculate position_relative (position / gen_length) with 4 decimal places
             position_relative = round(position / gen_length, 4)
@@ -870,22 +884,43 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     
     # Use the autoregressive confidence/entropy lists we calculated earlier
     block_size = best_value if best_value is not None else 1
-    remaining_length = gen_length - curr_pos
+    
+    # Use token_position (calculated earlier) to get correct remaining_length
+    remaining_length = gen_length - token_position  # Use token position, not step number!
     block_size_rel = round(block_size / remaining_length, 4) if remaining_length > 0 else 0.0
+    
+    print(f"📊 Label calculation: token_position={token_position}, remaining_length={remaining_length}, block_size={block_size}, block_size_rel={block_size_rel}")
     
     training_sample = {
         "features": features,
         "block_size": block_size,
         "block_size_rel": block_size_rel,
         "full_confidence_list": autoregressive_confidence,  # Forward-looking confidence from curr_pos
-        "full_entropy_list": autoregressive_entropy,        # Forward-looking entropy from curr_pos
+        "full_entropy_list": autoregressive_entropy,        # Forward-looking SHANNON entropy from curr_pos (not regular entropy!)
         "full_token_ids": full_token_ids,
         "full_token_texts": full_token_texts
     }
     
-    print(f"\nTraining sample for curr_pos={curr_pos}:")
+    print(f"\n{'='*80}")
+    print(f"✅ Training sample for curr_pos={curr_pos} (step number):")
+    print(f"{'='*80}")
     print(f"Features: {features}")
     print(f"Block size: {training_sample['block_size']}")
+    print(f"\n📏 List lengths validation:")
+    print(f"   full_confidence_list: {len(autoregressive_confidence)} (should be {gen_length} - token_position)")
+    print(f"   full_entropy_list:    {len(autoregressive_entropy)} (should be {gen_length} - token_position)")
+    print(f"   full_token_ids:       {len(full_token_ids)} (should be {gen_length})")
+    print(f"   full_token_texts:     {len(full_token_texts)} (should be {gen_length})")
+    
+    # Use token_position (calculated earlier) for validation
+    expected_conf_len = gen_length - token_position
+    actual_conf_len = len(autoregressive_confidence)
+    print(f"   Token position: {token_position}, Expected confidence length: {expected_conf_len}, Actual: {actual_conf_len}")
+    if actual_conf_len == expected_conf_len:
+        print(f"   ✅ Confidence/entropy list lengths are CORRECT!")
+    else:
+        print(f"   ❌ WARNING: Confidence list length mismatch!")
+    print(f"{'='*80}\n")
 
     return training_sample
 
@@ -1269,22 +1304,17 @@ def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_
     else:
         print(f"   Speedup vs AR: N/A (no steps taken)")
     
-    # Massage training_samples before writing: fix position and position_relative
-    # Build mapping from step_num to actual token position using manual_settings
-    step_to_position = {}
-    curr_token_pos = 0
-    for step in sorted(manual_settings.keys()):
-        step_to_position[step] = curr_token_pos
-        curr_token_pos += manual_settings[step]
-    
-    # Update each sample's position features
-    for step, sample in enumerate(training_samples):
-        if step in step_to_position and 'features' in sample and len(sample['features']) > 0:
-            actual_position = step_to_position[step]
-            feature_row = sample['features'][0]
-            # feature_row: [confidence, entropy, position, token_id, token_text, position_relative, ...]
-            feature_row[2] = actual_position  # position
-            feature_row[5] = round(actual_position / gen_length, 4)  # position_relative
+    # Note: Position features are now set correctly in generate_one_sample
+    # (using token_position instead of step_num), so no massage needed!
+    # Keeping this section as a validation check:
+    if len(training_samples) > 0:
+        print(f"\n✅ Position validation:")
+        for i, sample in enumerate(training_samples[:3]):  # Check first 3 samples
+            if 'features' in sample and len(sample['features']) > 0:
+                feature_row = sample['features'][0]
+                position = feature_row[2]
+                position_rel = feature_row[5]
+                print(f"   Sample {i}: position={position}, position_relative={position_rel:.4f}")
     
     # Save to JSON and CSV files (only if save_to_file is True)
     if save_to_file:

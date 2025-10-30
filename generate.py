@@ -261,12 +261,30 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             position_relative = round(curr_pos / gen_length, 4)
             features = additional_features.get(curr_pos, {})
             
-            # Print select features: mean_confidence and shannon_mean_entropy
-            mean_conf = features.get('mean_confidence', None)
-            shannon_ent = features.get('shannon_mean_entropy', None)
-            print(f"The mean_confidence: {mean_conf:.4f}" if mean_conf is not None else "The mean_confidence: N/A")
-            print(f"The shannon_mean_entropy: {shannon_ent:.4f}" if shannon_ent is not None else "The shannon_mean_entropy: N/A")
+            # Print ALL 30 features for debugging
+            print(f"\n{'='*80}")
+            print(f"🔍 ALL FEATURES at curr_pos={curr_pos} (token position)")
+            print(f"{'='*80}")
             features['position_relative'] = position_relative
+            
+            # Feature names in order (30 total)
+            feature_names = [
+                'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin',
+                'mean_confidence', 'mean_entropy', 'shannon_mean_entropy', 
+                'conf_std', 'entropy_std', 'shannon_entropy_std',
+                'conf_1', 'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min',
+                'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
+                'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
+                'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9'
+            ]
+            
+            for i, name in enumerate(feature_names, 1):
+                value = features.get(name, 'N/A')
+                if isinstance(value, (int, float)):
+                    print(f"  {i:2d}. {name:25s} = {value:.4f}")
+                else:
+                    print(f"  {i:2d}. {name:25s} = {value}")
+            print(f"{'='*80}\n")
             
             # Get relative block size from XGBoost
             block_size_rel = predict_block_size(
@@ -278,13 +296,28 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             
             # Convert to absolute block size based on REMAINING tokens
             remaining_tokens = gen_length - curr_pos
-            block_size = int(round(block_size_rel * remaining_tokens))
+            block_size_raw = block_size_rel * remaining_tokens
+            block_size = int(round(block_size_raw))
             
             # Apply conservative offset (subtract to make block size smaller)
+            block_size_before_offset = block_size
             block_size = block_size - block_size_offset
             
             # Ensure block_size is at least 1 and at most remaining_tokens
-            block_size = max(1, min(block_size, remaining_tokens))
+            block_size_final = max(1, min(block_size, remaining_tokens))
+            
+            # Print prediction details
+            print(f"📊 PREDICTION:")
+            print(f"   block_size_rel (XGBoost output) = {block_size_rel:.4f}")
+            print(f"   remaining_tokens                = {remaining_tokens}")
+            print(f"   block_size_raw                  = {block_size_rel:.4f} × {remaining_tokens} = {block_size_raw:.2f}")
+            print(f"   block_size (rounded)            = {block_size_before_offset}")
+            if block_size_offset > 0:
+                print(f"   block_size (after offset -{block_size_offset}) = {block_size}")
+            print(f"   block_size_final (clamped)      = {block_size_final}")
+            print(f"{'='*80}\n")
+            
+            block_size = block_size_final
         else:
             remaining_tokens = gen_length - curr_pos
             block_size = min(block_length, remaining_tokens)
@@ -611,6 +644,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
         if num_block == curr_pos and initial_confidence is None:
             if verbose:
                 print(f"\n🎯 CAPTURING confidence/entropy at block {num_block} (curr_pos={curr_pos})")
+                print(f"   Token position: {block_start} (block {num_block} starts here)")
             
             # Get current logits to calculate confidence/entropy
             if cfg_scale > 0.:
@@ -637,6 +671,8 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                 print(f"🎭 Tokens decoded so far: {decoded_count}/{gen_length} (masked: {masked_count})")
             
             # Extract features using the shared extract_features function
+            # IMPORTANT: Pass block_start (token position) instead of curr_pos (block number)
+            # This ensures features are indexed by token position consistently with generate_charles
             (initial_confidence, initial_entropy, initial_shannon_entropy, 
              additional_features, ar_context_tokens) = extract_features(
                 logits=logits,
@@ -645,7 +681,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
                 gen_length=gen_length,
                 tokenizer=tokenizer,
                 verbose=verbose,
-                curr_pos=curr_pos
+                curr_pos=block_start  # Use token position, not block number!
             )
 
         # initialize boolean mask to all <mask> in current block
