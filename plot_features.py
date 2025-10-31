@@ -24,8 +24,9 @@ FILTER_BY_POSITION_RELATIVE = False  # Set to True to filter by position_relativ
 LOWER_BOUND = 0.3  # Minimum position_relative (e.g., 0.0 = start, 1.0 = end)
 UPPER_BOUND = 0.7  # Maximum position_relative
 
-# Label column to analyze
+# Label column to analyze (used for feature correlation plots only)
 LABEL_COLUMN = 'block_size_rel'  # Options: 'block_size' or 'block_size_rel'
+# Note: Histogram always uses 'block_size' regardless of this setting
 # ============================================================================
 
 def plot_label_histogram(csv_path):
@@ -55,8 +56,8 @@ def plot_label_histogram(csv_path):
         df = df[(df['position_relative'] >= LOWER_BOUND) & (df['position_relative'] <= UPPER_BOUND)]
         print(f"🔍 Filtered to {len(df)} samples where position_relative in [{LOWER_BOUND}, {UPPER_BOUND}]")
     
-    # Get the labels using configured column
-    labels = df[LABEL_COLUMN]
+    # Get the labels - always use 'block_size' for histogram
+    labels = df['block_size']
     
     # Calculate statistics
     mean_val = labels.mean()
@@ -85,7 +86,15 @@ def plot_label_histogram(csv_path):
     plt.figure(figsize=(12, 8))
     
     # Bar plot of value counts
-    bars = plt.bar(value_counts.index, value_counts.values, alpha=0.7, color='lightcoral', edgecolor='black')
+    # Calculate appropriate bar width based on the number of unique values
+    num_unique = len(value_counts)
+    if num_unique > 10:
+        bar_width = 0.8 * (max(value_counts.index) - min(value_counts.index)) / num_unique
+    else:
+        bar_width = 0.8  # Default width for fewer bars
+    
+    bars = plt.bar(value_counts.index, value_counts.values, width=bar_width, 
+                   alpha=0.7, color='lightcoral', edgecolor='black')
     
     # Add percentage labels on bars
     for bar, count in zip(bars, value_counts.values):
