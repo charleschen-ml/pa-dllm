@@ -99,22 +99,22 @@ def main(use_wandb=True):
     # CONFIGURATION
     # ========================================
     USE_REGRESSION = True  # Set to True for regression, False for classification
-    FILTER_BY_ANSWER_FOUND = False  # Set to True to filter out answer_found==True samples
+    FILTER_BY_ANSWER_FOUND = True  # Set to True to filter out answer_found==True samples
     
     # ========================================
     # HYPERPARAMETERS - TUNE THESE!
     # ========================================
     HYPERPARAMS = {
         # Tree structure
-        'n_estimators': 100,      # Number of trees (more = better fit, slower). Try: 50, 100, 200, 500
-        'max_depth': 6,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
+        'n_estimators': 300,      # Number of trees (more = better fit, slower). Try: 50, 100, 200, 500
+        'max_depth': 9,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
         
         # Learning
         'learning_rate': 0.05,    # Learning rate (lower = slower, more careful). Try: 0.01, 0.05, 0.1, 0.3
         
         # Regularization (prevents overfitting) - uncomment to use
-        # 'subsample': 0.8,         # Fraction of samples per tree
-        # 'colsample_bytree': 0.8,  # Fraction of features per tree
+        'subsample': 0.8,         # Fraction of samples per tree
+        'colsample_bytree': 0.8,  # Fraction of features per tree
         # 'min_child_weight': 5,    # Minimum samples in leaf (higher = smoother)
         # 'gamma': 1,               # Minimum loss reduction to split
         # 'reg_alpha': 0.5,           # L1 regularization
@@ -194,7 +194,21 @@ def main(use_wandb=True):
             print(f"   Before: {before_count} samples")
             print(f"   After:  {len(df)} samples")
     
-    # Feature columns (30 features - all confidence and entropy variants + aggregates)
+    # Feature columns - Option 1: Minimal features (less missing values)
+    # feature_cols = [
+    #     'position_relative',
+    #     # Confidence features (positions 0-1 only)
+    #     'conf_0', 'conf_1',
+    #     # Shannon entropy features (positions 0-1 only)
+    #     'shannon_entropy_0', 'shannon_entropy_1',
+    #     # Aggregate features
+    #     'top1_margin', 'mean_confidence', 'shannon_mean_entropy',
+    #     'conf_std', 'shannon_entropy_std',
+    #     'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
+    # ]
+    
+    # Feature columns - Option 2: All features (30 features, some with missing values)
+    # Uncomment below and comment out Option 1 above to use all features
     feature_cols = [
         'position_relative',
         # Confidence features (positions 0-9)
@@ -208,10 +222,29 @@ def main(use_wandb=True):
         'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
     ]
     
-    # Monotonic constraints for XGBoost
+    # Monotonic constraints for XGBoost - Option 1: Minimal features
     # +1 = positive monotonicity (higher feature → higher block_size)
     # -1 = negative monotonicity (higher feature → lower block_size)
     #  0 = no constraint (let model learn freely)
+    # monotonic_constraints = {
+    #     'position_relative': 1,           # Later positions → larger blocks
+    #     # Confidence features: higher confidence → larger blocks (+1)
+    #     'conf_0': 1, 'conf_1': 1,
+    #     # Shannon entropy features: higher entropy → smaller blocks (-1)
+    #     'shannon_entropy_0': -1, 'shannon_entropy_1': -1,
+    #     # Aggregate features
+    #     'top1_margin': 1,                # Larger margin → larger blocks
+    #     'mean_confidence': 1,            # Higher mean conf → larger blocks
+    #     'shannon_mean_entropy': -1,      # Higher mean entropy → smaller blocks
+    #     'conf_std': 0,                   # Let model learn freely (stddev of confidence)
+    #     'shannon_entropy_std': 0,        # Let model learn freely (stddev of entropy)
+    #     'top4_conf_min': 1,              # Higher min conf → larger blocks
+    #     'next4_conf_min': 1,             # Higher min conf → larger blocks
+    #     'top8_conf_min': 1,              # Higher min conf → larger blocks
+    #     'next8_conf_min': 1              # Higher min conf → larger blocks
+    # }
+    
+    # Monotonic constraints - Option 2: All features (uncomment if using Option 2 above)
     monotonic_constraints = {
         'position_relative': 1,           # Later positions → larger blocks
         # Confidence features: higher confidence → larger blocks (+1)

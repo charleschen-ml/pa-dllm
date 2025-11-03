@@ -167,7 +167,7 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
 @torch.no_grad()
 def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_length=128, block_length=128, 
                      temperature=0., cfg_scale=0., remasking='low_confidence', mask_id=126336, 
-                     expected_answer=None, use_regression=True, block_size_offset=0):
+                     expected_answer=None, use_regression=True, block_size_offset=0, max_block_size=10):
     '''
     Dynamic block size generation using XGBoost scheduler.
     
@@ -186,6 +186,7 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         expected_answer: Optional, if set will compare against `extract_numerical()` for correctness logging.
         use_regression: If True, scheduler is regression model; else classification.
         block_size_offset: Integer offset to subtract from predicted block_size for conservative sizing (default: 0).
+        max_block_size: Maximum allowed block size to cap predictions (default: 10, matching training data cap).
     '''
 
     # Create x = prompt + completion 
@@ -303,8 +304,9 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             block_size_before_offset = block_size
             block_size = block_size - block_size_offset
             
-            # Ensure block_size is at least 1 and at most remaining_tokens
-            block_size_final = max(1, min(block_size, remaining_tokens))
+            # Ensure block_size is at least 1 and at most min(remaining_tokens, max_block_size)
+            # Cap at max_block_size to match training data distribution
+            block_size_final = max(1, min(block_size, remaining_tokens, max_block_size))
             
             # Print prediction details
             print(f"📊 PREDICTION:")
@@ -314,7 +316,7 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             print(f"   block_size (rounded)            = {block_size_before_offset}")
             if block_size_offset > 0:
                 print(f"   block_size (after offset -{block_size_offset}) = {block_size}")
-            print(f"   block_size_final (clamped)      = {block_size_final}")
+            print(f"   block_size_final (clamped 1-{max_block_size}) = {block_size_final}")
             print(f"{'='*80}\n")
             
             block_size = block_size_final

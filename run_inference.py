@@ -5,6 +5,8 @@ Run Inference Script - Load saved model and run inference
 
 # Set HuggingFace cache directories to local project cache
 import os
+
+from numpy import true_divide
 os.environ["HF_HOME"] = "./cache"
 os.environ["HF_DATASETS_CACHE"] = "./cache/datasets"
 
@@ -37,7 +39,7 @@ if __name__ == '__main__':
     USE_GREEDY = True  # True: use greedy mode when generating training samples, False: use AR mode
     USE_PARALLEL = False  # Set to False for sequential mode (needed for batch inference)
     NUM_GPUS = 4  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = 1  # Number of questions to process (None = process all questions in CSV)
+    NUM_QUESTIONS = 100  # Number of questions to process (None = process all questions in CSV)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -292,6 +294,7 @@ if __name__ == '__main__':
     CFG_SCALE = 0.
     REMASKING = 'low_confidence'
     BLOCK_SIZE_OFFSET = 0  # Conservative offset: subtract from predicted block_size (0=no offset)
+    MAX_BLOCK_SIZE = 10  # Maximum allowed block size (should match training data cap)
     
     # Load all questions from gsm8k_correct.csv
     df_questions = pd.read_csv("./data/gsm8k_correct.csv")
@@ -308,6 +311,7 @@ if __name__ == '__main__':
     print(f"  CFG scale: {CFG_SCALE}")
     print(f"  Remasking: {REMASKING}")
     print(f"  Block size offset: {BLOCK_SIZE_OFFSET} (conservative adjustment)")
+    print(f"  Max block size: {MAX_BLOCK_SIZE} (matches training data cap)")
     print(f"  Total questions: {len(df_questions)}")
     print(f"{'='*80}\n")
     
@@ -353,7 +357,8 @@ if __name__ == '__main__':
             remasking=REMASKING,
             expected_answer=correct_answer,
             use_regression=USE_REGRESSION,
-            block_size_offset=BLOCK_SIZE_OFFSET
+            block_size_offset=BLOCK_SIZE_OFFSET,
+            max_block_size=MAX_BLOCK_SIZE
         )
         
         end_time = time.time()

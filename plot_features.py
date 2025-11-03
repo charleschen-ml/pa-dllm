@@ -17,20 +17,23 @@ import os
 # CONFIGURATION
 # ============================================================================
 # Filtering options
-FILTER_BY_ANSWER_FOUND = False  # Set to True to filter out answer_found==True samples
+FILTER_BY_ANSWER_FOUND = True  # Set to True to filter out answer_found==True samples
 FILTER_BY_POSITION_RELATIVE = False  # Set to True to filter by position_relative range
 
 # Position filtering bounds (only used if FILTER_BY_POSITION_RELATIVE=True)
 LOWER_BOUND = 0.3  # Minimum position_relative (e.g., 0.0 = start, 1.0 = end)
 UPPER_BOUND = 0.7  # Maximum position_relative
 
-# Label column to analyze (used for feature correlation plots only)
+# Label column to analyze (used for feature correlation plots)
 LABEL_COLUMN = 'block_size_rel'  # Options: 'block_size' or 'block_size_rel'
-# Note: Histogram always uses 'block_size' regardless of this setting
+
+# Label column for histogram
+HISTOGRAM_LABEL_COLUMN = 'block_size'  # Options: 'block_size' or 'block_size_rel'
+# Note: When using 'block_size_rel', will bin into 0.1-wide buckets (10 bins total)
 # ============================================================================
 
 def plot_label_histogram(csv_path):
-    """Plot histogram of labels (block_size) and save to output directory"""
+    """Plot histogram of labels (configurable: block_size or block_size_rel) and save to output directory"""
     
     # Create output directory if it doesn't exist
     os.makedirs('./output', exist_ok=True)
@@ -56,8 +59,12 @@ def plot_label_histogram(csv_path):
         df = df[(df['position_relative'] >= LOWER_BOUND) & (df['position_relative'] <= UPPER_BOUND)]
         print(f"🔍 Filtered to {len(df)} samples where position_relative in [{LOWER_BOUND}, {UPPER_BOUND}]")
     
-    # Get the labels - always use 'block_size' for histogram
-    labels = df['block_size']
+    # Get the labels based on configuration
+    if HISTOGRAM_LABEL_COLUMN not in df.columns:
+        print(f"❌ Histogram label column '{HISTOGRAM_LABEL_COLUMN}' not found in data")
+        return
+    
+    labels = df[HISTOGRAM_LABEL_COLUMN]
     
     # Calculate statistics
     mean_val = labels.mean()
@@ -67,7 +74,7 @@ def plot_label_histogram(csv_path):
     max_val = labels.max()
     
     # Print detailed statistics
-    print(f"\n📊 Label Distribution Statistics:")
+    print(f"\n📊 Label Distribution Statistics ({HISTOGRAM_LABEL_COLUMN}):")
     print(f"Mean: {mean_val:.4f}")
     print(f"Median: {median_val:.4f}")
     print(f"Standard Deviation: {std_val:.4f}")
@@ -75,41 +82,78 @@ def plot_label_histogram(csv_path):
     print(f"Maximum: {max_val}")
     print(f"Total Samples: {len(labels)}")
     
-    # Print value counts
-    print(f"\n🔢 Value Counts:")
-    value_counts = labels.value_counts().sort_index()
-    for value, count in value_counts.items():
-        percentage = (count / len(labels)) * 100
-        print(f"Block Size {value}: {count} samples ({percentage:.1f}%)")
+    # Prepare data for plotting based on label type
+    if HISTOGRAM_LABEL_COLUMN == 'block_size_rel':
+        # Bin into 0.1-wide buckets for block_size_rel
+        print(f"\n🔢 Binning block_size_rel into 0.1-wide buckets...")
+        bins = np.arange(0, 1.1, 0.1)  # [0.0, 0.1, 0.2, ..., 1.0]
+        bin_labels = [f'{i/10:.1f}-{(i+1)/10:.1f}' for i in range(10)]
+        
+        # Digitize to find which bin each value belongs to (1-indexed)
+        bin_indices = np.digitize(labels, bins, right=False)
+        # Clip to valid range [1, 10] (handles edge case of exactly 1.0)
+        bin_indices = np.clip(bin_indices, 1, 10)
+        
+        # Count samples in each bin
+        bin_counts = pd.Series(bin_indices).value_counts().sort_index()
+        
+        # Print bin counts
+        print(f"\n🔢 Bin Counts:")
+        for bin_idx, count in bin_counts.items():
+            percentage = (count / len(labels)) * 100
+            print(f"Bin {bin_labels[bin_idx-1]}: {count} samples ({percentage:.1f}%)")
+        
+        # Prepare for plotting
+        x_positions = range(1, 11)  # 1 to 10 for 10 bins
+        counts = [bin_counts.get(i, 0) for i in x_positions]
+        x_tick_labels = bin_labels
+        bar_width = 0.8
+        xlabel_text = 'Block Size Relative (Binned)'
+        title_label = 'Block Size Relative'
+    else:
+        # Use discrete values for block_size
+        print(f"\n🔢 Value Counts:")
+        value_counts = labels.value_counts().sort_index()
+        for value, count in value_counts.items():
+            percentage = (count / len(labels)) * 100
+            print(f"Block Size {value}: {count} samples ({percentage:.1f}%)")
+        
+        # Prepare for plotting
+        x_positions = value_counts.index
+        counts = value_counts.values
+        x_tick_labels = value_counts.index
+        
+        # Calculate appropriate bar width based on the number of unique values
+        num_unique = len(value_counts)
+        if num_unique > 10:
+            bar_width = 0.8 * (max(value_counts.index) - min(value_counts.index)) / num_unique
+        else:
+            bar_width = 0.8  # Default width for fewer bars
+        
+        xlabel_text = 'Block Size (Label)'
+        title_label = 'Block Size'
     
-    # Create a bar plot for value counts as well
+    # Create a bar plot
     plt.figure(figsize=(12, 8))
     
-    # Bar plot of value counts
-    # Calculate appropriate bar width based on the number of unique values
-    num_unique = len(value_counts)
-    if num_unique > 10:
-        bar_width = 0.8 * (max(value_counts.index) - min(value_counts.index)) / num_unique
-    else:
-        bar_width = 0.8  # Default width for fewer bars
-    
-    bars = plt.bar(value_counts.index, value_counts.values, width=bar_width, 
+    bars = plt.bar(x_positions, counts, width=bar_width, 
                    alpha=0.7, color='lightcoral', edgecolor='black')
     
     # Add percentage labels on bars
-    for bar, count in zip(bars, value_counts.values):
-        height = bar.get_height()
-        percentage = (count / len(labels)) * 100
-        plt.text(bar.get_x() + bar.get_width()/2., height + 0.01*max(value_counts.values),
-                f'{count}\n({percentage:.1f}%)', ha='center', va='bottom', fontsize=10)
+    for bar, count in zip(bars, counts):
+        if count > 0:  # Only label non-empty bars
+            height = bar.get_height()
+            percentage = (count / len(labels)) * 100
+            plt.text(bar.get_x() + bar.get_width()/2., height + 0.01*max(counts),
+                    f'{count}\n({percentage:.1f}%)', ha='center', va='bottom', fontsize=10)
     
-    plt.xlabel('Block Size (Label)', fontsize=12)
+    plt.xlabel(xlabel_text, fontsize=12)
     plt.ylabel('Count', fontsize=12)
-    plt.title(f'Distribution of Labels (Block Size)\nTotal Samples: {len(labels)}', fontsize=14)
+    plt.title(f'Distribution of Labels ({title_label})\nTotal Samples: {len(labels)}', fontsize=14)
     plt.grid(True, alpha=0.3, axis='y')
     
-    # Set x-axis to show only integer ticks
-    plt.xticks(value_counts.index)
+    # Set x-axis ticks
+    plt.xticks(x_positions, x_tick_labels, rotation=45 if HISTOGRAM_LABEL_COLUMN == 'block_size_rel' else 0)
     
     # Add statistics text box to bar plot
     stats_text = f'''Statistics:
