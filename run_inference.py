@@ -111,15 +111,33 @@ def load_model_custom(model_args, device):
     )
     print("✅ Config loaded")
     
+    # Enable scheduler head for block_size_rel prediction
+    config.use_scheduler_head = True
+    print("✅ Scheduler head enabled")
+    
     # Create model using LOCAL modeling_llada.py
     print("Creating model from LOCAL modeling_llada.py...")
     model = LLaDAModelLM(config, init_params=False)
     print("✅ Model architecture created from local code")
     
+    # Debug: Check if scheduler_head was created
+    if hasattr(model.model.transformer, "scheduler_head"):
+        print("✅ Scheduler head found in model.model.transformer")
+    else:
+        print("❌ Scheduler head NOT found in model.model.transformer")
+        print(f"   transformer keys: {list(model.model.transformer.keys())[:10]}...")
+    
     # Load saved weights (much faster than downloading)
     print("Loading saved model weights...")
     state_dict = torch.load('./cache/model_weights.pt', weights_only=True, map_location='cpu')
-    model.load_state_dict(state_dict)
+    
+    # Load weights with strict=False to allow new scheduler_head (not in saved weights)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    
+    if missing_keys:
+        print(f"⚠️  Missing keys (newly added components): {missing_keys}")
+    if unexpected_keys:
+        print(f"⚠️  Unexpected keys: {unexpected_keys}")
     
     # Now move to GPU and set to eval mode
     model = model.to(device).to(torch.bfloat16).eval()

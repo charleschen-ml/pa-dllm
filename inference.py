@@ -328,7 +328,7 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     print(f"templated prompt=\n{inputs_decoded}")
 
     # original llada generate()
-    out = generate_vanilla(
+    out, block_size_preds = generate_vanilla(
         model, 
         tokenizer, # charles added
         input_ids, 
@@ -354,6 +354,23 @@ def run_inference(model, tokenizer, device, prompt, model_args, max_new_tokens=3
     out_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
     print(f"out_text=\n{out_text}")
     # print(f"Answer correct? {extract_numerical(out_text) == 72}")
+
+    # Print scheduler predictions if available
+    if block_size_preds:
+        print(f"\n📊 Block Size Predictions (from scheduler head):")
+        print(f"{'='*80}")
+        for pred in block_size_preds[:10]:  # Show first 10 to avoid clutter
+            # Calculate block_size assuming remaining_length (simplified estimate)
+            remaining_tokens = gen_length - (pred['position'] - input_ids.shape[1])
+            block_size = max(1, int(pred['block_size_rel'] * remaining_tokens))
+            print(f"  Step {pred['step']:3d} | Position {pred['position']:3d} | "
+                  f"block_size_rel={pred['block_size_rel']:.4f} | "
+                  f"block_size≈{block_size}")
+        if len(block_size_preds) > 10:
+            print(f"  ... ({len(block_size_preds) - 10} more predictions)")
+        print(f"{'='*80}")
+    else:
+        print(f"\n⚠️  No scheduler predictions (model does not have scheduler_head)")
 
     # debug
     # outputs_ids = outputs[0]  # tensor of shape [1, seq_len]
@@ -484,7 +501,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
                 
             print(f"Testing position {position} = {sweep_value}")
             
-            out, first_correct_step, block_confidences, initial_entropy, initial_confidence, _, _, initial_shannon_entropy = generate_custom(
+            out, first_correct_step, block_confidences, initial_entropy, initial_confidence, _, _, initial_shannon_entropy, _ = generate_custom(
                 model, 
                 tokenizer, # charles added
                 input_ids,
@@ -565,7 +582,7 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
 
         if final_block_sizes is not None:
             # First, run generate_custom to get the final result and confidences
-            out, _, final_confidences, _, _, _, _, _ = generate_custom(
+            out, _, final_confidences, _, _, _, _, _, _ = generate_custom(
                 model,
                 tokenizer,
                 input_ids,
@@ -661,7 +678,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             
         print(f"Testing position {position} = {sweep_value}")
         
-        out, first_correct_step, block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features, initial_shannon_entropy = generate_custom(
+        out, first_correct_step, block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features, initial_shannon_entropy, intermediate_x = generate_custom(
             model, 
             tokenizer, # charles added
             input_ids,
@@ -676,10 +693,11 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         )
         first_correct_steps.append(first_correct_step)
 
-        # Store AR context tokens, additional features, and confidence from the first call
+        # Store AR context tokens, additional features, confidence, and intermediate_x from the first call
         if stored_ar_tokens is None and ar_context_tokens is not None:
             stored_ar_tokens = ar_context_tokens.clone()
             stored_additional_features = additional_features.copy() if additional_features else {}
+            stored_intermediate_x = intermediate_x.clone() if intermediate_x is not None else None
             
             # Convert curr_pos (step_num) to actual token position
             # For greedy mode: curr_pos is step number, need to calculate token position
@@ -699,6 +717,8 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
                 autoregressive_entropy = []
                 print(f"⚠️ No confidence values available from generate_custom")
             
+            if stored_intermediate_x is not None:
+                print(f"📝 Stored intermediate_x with shape: {stored_intermediate_x.shape}")
             print(f"📝 Stored AR context tokens, additional features, and confidence for analysis")
 
         # Early exit: if no correct answer was ever found (inf), keep last good size and skip remaining sweeps
@@ -750,36 +770,36 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     print(optimal_output_text)
     
     # Show detailed confidence tracking for the optimal configuration
-    if optimal_block_sizes is not None:
-        print(f"\n{'='*60}")
-        print("DETAILED CONFIDENCE TRACKING")
-        print(f"{'='*60}")
+    # if optimal_block_sizes is not None:
+    #     print(f"\n{'='*60}")
+    #     print("DETAILED CONFIDENCE TRACKING")
+    #     print(f"{'='*60}")
 
-        # Generate the optimal configuration one more time to get the block breakdown
-        optimal_settings = {}
-        for i, size in enumerate(optimal_block_sizes):
-            if size > 0:
-                optimal_settings[i] = size
+    #     # Generate the optimal configuration one more time to get the block breakdown
+    #     optimal_settings = {}
+    #     for i, size in enumerate(optimal_block_sizes):
+    #         if size > 0:
+    #             optimal_settings[i] = size
 
-        final_block_sizes = calculate_block_sizes(
-            gen_length=gen_length,
-            base_block_length=base_block_length,
-            manual_settings=optimal_settings,
-        )
+    #     final_block_sizes = calculate_block_sizes(
+    #         gen_length=gen_length,
+    #         base_block_length=base_block_length,
+    #         manual_settings=optimal_settings,
+    #     )
 
-        if final_block_sizes is not None:
-            # First, run generate_custom to get the final result and confidences
-            out, _, final_confidences, _, _, _, _, _ = generate_custom(
-                model,
-                tokenizer,
-                input_ids,
-                steps=steps,
-                gen_length=gen_length,
-                block_sizes=final_block_sizes,
-                temperature=0.,
-                cfg_scale=0.,
-                remasking='low_confidence'
-            )
+    #     if final_block_sizes is not None:
+    #         # First, run generate_custom to get the final result and confidences
+    #         out, _, final_confidences, _, _, _, _, _, _ = generate_custom(
+    #             model,
+    #             tokenizer,
+    #             input_ids,
+    #             steps=steps,
+    #             gen_length=gen_length,
+    #             block_sizes=final_block_sizes,
+    #             temperature=0.,
+    #             cfg_scale=0.,
+    #             remasking='low_confidence'
+    #         )
 
     # store the input-ouput pair in this format (e.g. curr_pos=4):
     # {
@@ -891,6 +911,15 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     
     print(f"📊 Label calculation: token_position={token_position}, remaining_length={remaining_length}, block_size={block_size}, block_size_rel={block_size_rel}")
     
+    # Use the intermediate_x captured by generate_custom at curr_pos
+    # This is the state BEFORE generating the block at curr_pos
+    final_intermediate_x = stored_intermediate_x if stored_intermediate_x is not None else None
+    
+    # Decode intermediate_x for human readability (keep special tokens visible)
+    intermediate_x_decoded = None
+    if final_intermediate_x is not None:
+        intermediate_x_decoded = tokenizer.decode(final_intermediate_x[0], skip_special_tokens=False)
+    
     training_sample = {
         "features": features,
         "block_size": block_size,
@@ -898,7 +927,11 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         "full_confidence_list": autoregressive_confidence,  # Forward-looking confidence from curr_pos
         "full_entropy_list": autoregressive_entropy,        # Forward-looking SHANNON entropy from curr_pos (not regular entropy!)
         "full_token_ids": full_token_ids,
-        "full_token_texts": full_token_texts
+        "full_token_texts": full_token_texts,
+        "generated_text": optimal_output_text,  # Store the generated output text
+        "intermediate_x": final_intermediate_x.cpu().tolist() if final_intermediate_x is not None else None,  # Raw tensor state at curr_pos
+        "intermediate_x_shape": list(final_intermediate_x.shape) if final_intermediate_x is not None else None,  # Store shape for reconstruction
+        "intermediate_x_decoded": intermediate_x_decoded  # Human-readable decoded text with special tokens
     }
     
     print(f"\n{'='*80}")
@@ -906,6 +939,11 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     print(f"{'='*80}")
     print(f"Features: {features}")
     print(f"Block size: {training_sample['block_size']}")
+    print(f"Intermediate x shape: {training_sample.get('intermediate_x_shape', 'N/A')}")
+    if final_intermediate_x is not None:
+        print(f"   First 10 token IDs in intermediate_x: {final_intermediate_x[0, :10].tolist()}")
+        print(f"   Decoded intermediate_x (with special tokens):")
+        print(f"{intermediate_x_decoded}")
     print(f"\n📏 List lengths validation:")
     print(f"   full_confidence_list: {len(autoregressive_confidence)} (should be {gen_length} - token_position)")
     print(f"   full_entropy_list:    {len(autoregressive_entropy)} (should be {gen_length} - token_position)")
@@ -952,7 +990,9 @@ def write_to_json_csv(training_samples, json_output_path="./data/sft_training_sa
             'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin', 'mean_confidence', 'mean_entropy',
             'shannon_mean_entropy', 'conf_std', 'entropy_std', 'shannon_entropy_std', 'conf_1', 'top4_conf_min', 'next4_conf_min',
             'top8_conf_min', 'next8_conf_min', 'block_size', 'block_size_rel', 'answer_found',
-            'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts'
+            'full_confidence_list', 'full_entropy_list', 'full_token_ids', 'full_token_texts', 'generated_text',
+            'intermediate_x_shape',  # Shape of intermediate_x tensor (full tensor stored in JSON)
+            'intermediate_x_decoded'  # Decoded text of intermediate_x (with special tokens)
         ]
         if include_question_metadata:
             header.extend(['question_id', 'question'])
@@ -988,14 +1028,17 @@ def write_to_json_csv(training_samples, json_output_path="./data/sft_training_sa
                     sample.get('full_confidence_list', []),
                     sample.get('full_entropy_list', []),
                     sample.get('full_token_ids', []),
-                    sample.get('full_token_texts', [])
+                    sample.get('full_token_texts', []),
+                    sample.get('generated_text', ''),
+                    sample.get('intermediate_x_shape', None),
+                    sample.get('intermediate_x_decoded', '')
                 ]
                 if include_question_metadata:
                     row.extend([sample.get('question_id', ''), sample.get('question', '')])
                 writer.writerow(row)
             else:
                 # No features available, write a default row
-                row = [sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 15 + [1, 0.0, False, [], [], [], []]
+                row = [sample_id, 0.0, 0.0, 0, None, None, 0.0] + [0.0] * 15 + [1, 0.0, False, [], [], [], [], '', None, '']
                 if include_question_metadata:
                     row.extend([sample.get('question_id', ''), sample.get('question', '')])
                 writer.writerow(row)
@@ -1391,6 +1434,7 @@ def generate_custom_batch(
                 ar_context_tokens,
                 additional_features,
                 initial_shannon_entropy,
+                intermediate_x,
             ) = generate_custom(
                 model,
                 tokenizer,
@@ -1496,7 +1540,8 @@ def generate_custom_batch_parallel(
         (
             out, first_correct_step, block_confidences,
             initial_entropy, initial_confidence,
-            ar_context_tokens, additional_features, initial_shannon_entropy
+            ar_context_tokens, additional_features, initial_shannon_entropy,
+            intermediate_x
         ) = generate_custom(
             model, tokenizer, x_in,
             steps=steps, gen_length=gen_length,

@@ -14,8 +14,9 @@ def extract_numerical(text):
         num_str = boxed_match.group(1).replace(",", "")
     else:
         # Try to extract last number in string
-        num_match = re.search(r"(\d+(?:\.\d+)?)\s*$", text.strip())
-        num_str = num_match.group(1) if num_match else None
+        # num_match = re.search(r"(\d+(?:\.\d+)?)\s*$", text.strip())
+        # num_str = num_match.group(1) if num_match else None
+        num_str = None # charles temporarily disable for debugging
 
     if num_str is None:
         return None
@@ -91,6 +92,7 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
     steps_per_block = steps // num_blocks  # convert total_steps to steps_per_block
 
     first_correct_step = None  # Track first step with correct answer
+    block_size_predictions = []  # Collect scheduler predictions
 
     for num_block in range(num_blocks):
 
@@ -110,11 +112,36 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
                 un_x = x.clone()
                 un_x[prompt_index] = mask_id
                 x_ = torch.cat([x, un_x], dim=0)
-                logits = model(x_).logits
+                outputs = model(x_)
+                logits = outputs.logits
                 logits, un_logits = torch.chunk(logits, 2, dim=0)
                 logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+                # Note: scheduler predictions not extracted for CFG mode (would need special handling)
             else:
-                logits = model(x).logits  # get logits with current x
+                outputs = model(x)
+                logits = outputs.logits  # get logits with current x
+                
+                # Debug: Check what outputs contains
+                print(f"🔍 DEBUG: outputs type = {type(outputs)}")
+                print(f"🔍 DEBUG: hasattr(outputs, 'block_size_predictions') = {hasattr(outputs, 'block_size_predictions')}")
+                if hasattr(outputs, 'block_size_predictions'):
+                    print(f"🔍 DEBUG: outputs.block_size_predictions = {outputs.block_size_predictions}")
+                    print(f"🔍 DEBUG: outputs.block_size_predictions is not None = {outputs.block_size_predictions is not None}")
+                
+                # Extract scheduler predictions if available
+                if hasattr(outputs, 'block_size_predictions') and outputs.block_size_predictions is not None:
+                    print(f"🔍 SCHEDULER PREDICTIONS AVAILABLE")
+                    # Get predictions for all positions (shape: batch_size, seq_len)
+                    preds = outputs.block_size_predictions[0]  # batch_size=1, so take first
+                    
+                    # Store predictions for masked positions
+                    for pos_idx in range(len(preds)):
+                        if mask_index[0, pos_idx]:  # Only for positions that are still masked
+                            block_size_predictions.append({
+                                'step': total_step,
+                                'position': pos_idx,
+                                'block_size_rel': preds[pos_idx].item()
+                            })
 
             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
             x0 = torch.argmax(logits_with_noise, dim=-1)  # get index of token with highest logit at each position
@@ -162,7 +189,7 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
     # out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
     # print("\n" + out_text)
 
-    return x
+    return x, block_size_predictions
 
 @torch.no_grad()
 def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_length=128, block_length=128, 
@@ -609,6 +636,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     # Initialize confidence and entropy - will be captured at curr_pos block
     initial_entropy = None
     initial_confidence = None
+    intermediate_x = None  # Capture x state at curr_pos for MLP training
     
     # Track top-1 tokens after AR context is built (for parallel vs sequential analysis)
     ar_context_tokens = None
@@ -644,9 +672,13 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
 
         # Capture confidence and entropy at curr_pos block (before processing steps)
         if num_block == curr_pos and initial_confidence is None:
+            # Capture intermediate x state for MLP training
+            intermediate_x = x.clone()
+            
             if verbose:
                 print(f"\n🎯 CAPTURING confidence/entropy at block {num_block} (curr_pos={curr_pos})")
                 print(f"   Token position: {block_start} (block {num_block} starts here)")
+                print(f"   Captured intermediate_x shape: {intermediate_x.shape}")
             
             # Get current logits to calculate confidence/entropy
             if cfg_scale > 0.:
@@ -842,7 +874,7 @@ def generate_custom(model, tokenizer, prompt, steps=128, gen_length=128, block_s
     #     print(f"{'='*60}")
 
     # block_confidences: Final confidence scores for tokens that were actually decoded in each block
-    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features, initial_shannon_entropy
+    return x, first_correct_step if first_correct_step is not None else float('inf'), block_confidences, initial_entropy, initial_confidence, ar_context_tokens, additional_features, initial_shannon_entropy, intermediate_x
 
 def main():
     device = 'cuda'
