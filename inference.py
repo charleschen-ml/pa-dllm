@@ -921,7 +921,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
         intermediate_x_decoded = tokenizer.decode(final_intermediate_x[0], skip_special_tokens=False)
     
     training_sample = {
-        "features": features,
+        "features": features,  # features[0][2] contains token_position
         "block_size": block_size,
         "block_size_rel": block_size_rel,
         "full_confidence_list": autoregressive_confidence,  # Forward-looking confidence from curr_pos

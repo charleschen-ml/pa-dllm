@@ -957,6 +957,12 @@ class LLaDAOutput(NamedTuple):
     Only present when model has scheduler_head enabled.
     """
 
+    scheduler_loss: Optional[torch.FloatTensor] = None
+    """
+    MSE loss for scheduler head predictions. Only present when both scheduler_head is enabled
+    and block_size_rel_labels are provided.
+    """
+
 
 @dataclass
 class CustomLMOutputWithPast(ModelOutput):
@@ -969,6 +975,7 @@ class CustomLMOutputWithPast(ModelOutput):
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
     block_size_predictions: Optional[torch.FloatTensor] = None
+    scheduler_loss: Optional[torch.FloatTensor] = None
 
 
 class LLaDAGenerateOutput(NamedTuple):
@@ -1217,6 +1224,8 @@ class LLaDAModel(nn.Module):
         use_cache: bool = False,
         last_logits_only: bool = False,
         output_hidden_states: Optional[bool] = None,
+        block_size_rel_labels: Optional[torch.FloatTensor] = None,
+        token_positions: Optional[torch.LongTensor] = None,
     ) -> LLaDAOutput:
         """
         :param input_ids: A tensor of shape `(batch_size, seq_len)`.
@@ -1247,6 +1256,13 @@ class LLaDAModel(nn.Module):
         :param use_cache: If `True`, return key and value tensors for each block.
         :param last_logits_only: If `True`, only compute the logits for the last token of each sequence.
             This can speed up decoding when you only care about the next token.
+        :param block_size_rel_labels: Optional tensor of shape `(batch_size,)` with ground truth
+            block_size_rel values for training the scheduler head. When provided, the model computes
+            MSE loss between the prediction at the specified token position and this label.
+        :param token_positions: REQUIRED tensor of shape `(batch_size,)` when block_size_rel_labels is provided.
+            Indicates which token position to extract the prediction from for loss computation.
+            Extract from training data as: torch.tensor([sample['features'][0][2] for sample in batch])
+            This is critical because intermediate_x includes masked tokens after curr_pos.
         """
         # Add Basic MDM Model config check
         assert not self.config.alibi, "Alibi length extrapolation is not supported for MDM."
@@ -1398,9 +1414,35 @@ class LLaDAModel(nn.Module):
 
         # Predict block sizes using scheduler head (optional)
         block_size_predictions = None
+        scheduler_loss = None
         if hasattr(self.transformer, "scheduler_head"):
             # shape: (batch_size, seq_len or 1, 1) -> (batch_size, seq_len or 1)
             block_size_predictions = self.transformer.scheduler_head(x).squeeze(-1)
+            
+            # Compute loss if labels are provided
+            if block_size_rel_labels is not None:
+                # During training, we predict for all positions but only have label for one position
+                # (the token_position = curr_pos in generation, where the prediction was made).
+                # block_size_predictions shape: [batch_size, seq_len]
+                # block_size_rel_labels shape: [batch_size] (one label per sample)
+                # token_positions shape: [batch_size] (token position to extract prediction from)
+                
+                if token_positions is None:
+                    raise ValueError(
+                        "token_positions must be provided when block_size_rel_labels is given. "
+                        "Extract token_position from training data: sample['features'][0][2]"
+                    )
+                
+                # Extract predictions at the specified token positions
+                batch_indices = torch.arange(block_size_predictions.size(0), device=block_size_predictions.device)
+                pred_at_pos = block_size_predictions[batch_indices, token_positions]  # [batch_size]
+                
+                # Convert to float32 for loss computation (numerical stability)
+                pred_at_pos = pred_at_pos.float()
+                block_size_rel_labels = block_size_rel_labels.float()
+                
+                loss_fn = torch.nn.MSELoss()
+                scheduler_loss = loss_fn(pred_at_pos, block_size_rel_labels)
 
         # Get logits.
         # shape: (batch_size, seq_len or 1, vocab_size)
@@ -1415,7 +1457,8 @@ class LLaDAModel(nn.Module):
             logits=logits, 
             attn_key_values=attn_key_values, 
             hidden_states=tuple(all_hidden_states) if output_hidden_states else None,
-            block_size_predictions=block_size_predictions
+            block_size_predictions=block_size_predictions,
+            scheduler_loss=scheduler_loss
         )  # type: ignore[arg-type]
 
 
@@ -1465,6 +1508,8 @@ class LLaDAModelLM(PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[Cache] = None,  # This is a hack mitigation of an issue in transformers `4.39.x`
+        block_size_rel_labels: Optional[torch.FloatTensor] = None,
+        token_positions: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, CustomLMOutputWithPast]:
         if use_cache is None:
             use_cache = self.config.use_cache
@@ -1483,11 +1528,14 @@ class LLaDAModelLM(PreTrainedModel):
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_hidden_states=output_hidden_states,
+            block_size_rel_labels=block_size_rel_labels,
+            token_positions=token_positions,
         )
 
         logits = outputs.logits
         hidden_states = outputs.hidden_states
         block_size_predictions = outputs.block_size_predictions
+        scheduler_loss = outputs.scheduler_loss
 
         loss = None
         if labels is not None:
@@ -1502,6 +1550,7 @@ class LLaDAModelLM(PreTrainedModel):
             past_key_values=outputs.attn_key_values,
             hidden_states=hidden_states,
             block_size_predictions=block_size_predictions,  # Pass through scheduler predictions
+            scheduler_loss=scheduler_loss,  # Pass through scheduler loss
         )
 
     def can_generate(self) -> bool:

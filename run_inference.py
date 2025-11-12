@@ -115,6 +115,9 @@ def load_model_custom(model_args, device):
     config.use_scheduler_head = True
     print("✅ Scheduler head enabled")
     
+    # Set init device to CPU (will move to GPU later)
+    config.init_device = "cpu"
+    
     # Create model using LOCAL modeling_llada.py
     print("Creating model from LOCAL modeling_llada.py...")
     model = LLaDAModelLM(config, init_params=False)
@@ -136,10 +139,17 @@ def load_model_custom(model_args, device):
     
     if missing_keys:
         print(f"⚠️  Missing keys (newly added components): {missing_keys}")
+        # Initialize scheduler_head if it was missing from state_dict
+        if any('scheduler_head' in key for key in missing_keys):
+            print("🔧 Initializing scheduler_head parameters...")
+            for module in model.model.transformer.scheduler_head:
+                if hasattr(module, 'reset_parameters'):
+                    module.reset_parameters()
+            print("✅ Scheduler_head initialized")
     if unexpected_keys:
         print(f"⚠️  Unexpected keys: {unexpected_keys}")
     
-    # Now move to GPU and set to eval mode
+    # Now move to GPU and convert to bfloat16
     model = model.to(device).to(torch.bfloat16).eval()
     print("✅ Model loaded from saved weights (fast)")
     
