@@ -210,11 +210,11 @@ def main():
     # Configuration
     CONFIG = {
         'data_path': 'data/sft_training_samples_greedy.json',
-        'num_questions': 1,  # Number of questions to use (None = use all)
+        'num_questions': 5,  # Number of questions to use (None = use all)
         'batch_size': 1,
         'learning_rate': 1e-4,
         'num_epochs': 10,
-        'val_split': 0.1,  # 10% for validation
+        'val_split': 0,  # 10% for validation
         'checkpoint_dir': 'checkpoints/scheduler_head',
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
     }
