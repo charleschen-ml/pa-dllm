@@ -374,10 +374,11 @@ def main():
         # 'data_path': 'data/sft_training_samples_greedy.json',
         'data_path': 'data/sft_training_samples_multi_greedy_parallel.json',
         'num_questions': 100,  # Number of questions to use (None = use all)
-        'batch_size': 1,
+        'batch_size': 8,
         'learning_rate': 1e-4,
-        'num_epochs': 10,
+        'num_epochs': 40,
         'val_split': 0.1,  # 10% for validation
+        'early_stopping_patience': 5,  # Stop if no improvement for N epochs
         'checkpoint_dir': 'checkpoints/scheduler_head',
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'seed': SEED,
@@ -483,6 +484,7 @@ def main():
     best_val_loss = float('inf')
     best_train_loss = float('inf')
     best_epoch = 0
+    epochs_without_improvement = 0
     
     # Track losses for plotting
     train_losses = []
@@ -525,6 +527,7 @@ def main():
             best_val_loss = val_loss
             best_train_loss = train_loss
             best_epoch = epoch
+            epochs_without_improvement = 0
             best_path = os.path.join(CONFIG['checkpoint_dir'], 'scheduler_head_best.pt')
             torch.save({
                 'epoch': epoch,
@@ -534,10 +537,20 @@ def main():
                 'val_loss': val_loss,
             }, best_path)
             print(f"  ⭐ Best model saved: {best_path}")
+        else:
+            epochs_without_improvement += 1
+            print(f"  📊 No improvement for {epochs_without_improvement} epoch(s)")
+            
+            # Early stopping check
+            if epochs_without_improvement >= CONFIG['early_stopping_patience']:
+                print(f"\n🛑 Early stopping triggered! No improvement for {CONFIG['early_stopping_patience']} epochs.")
+                print(f"   Best val loss: {best_val_loss:.4f} (Epoch {best_epoch})")
+                break
     
     # Calculate total training time
     total_time = time.time() - total_start_time
-    avg_epoch_time = total_time / CONFIG['num_epochs']
+    actual_epochs = epoch  # Use actual number of epochs completed
+    avg_epoch_time = total_time / actual_epochs
     
     print("\n" + "="*60)
     print("✅ TRAINING COMPLETE!")
@@ -545,10 +558,11 @@ def main():
     print(f"   Train Loss: {best_train_loss:.4f}")
     print(f"   Val Loss:   {best_val_loss:.4f}")
     print(f"\n⏱️  TIMING REPORT:")
+    print(f"   Epochs completed: {actual_epochs}/{CONFIG['num_epochs']}")
     print(f"   Total training time: {total_time:.1f}s ({total_time/60:.1f}m)")
     print(f"   Average time per epoch: {avg_epoch_time:.1f}s")
     print(f"   Training samples: {len(train_loader.dataset)}")
-    print(f"   Throughput: {len(train_loader.dataset) * CONFIG['num_epochs'] / total_time:.1f} samples/sec")
+    print(f"   Throughput: {len(train_loader.dataset) * actual_epochs / total_time:.1f} samples/sec")
     print(f"💾 Checkpoints saved in: {CONFIG['checkpoint_dir']}")
     print("="*60)
     
