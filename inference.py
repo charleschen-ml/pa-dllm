@@ -2008,3 +2008,215 @@ def predict_block_size(scheduler, features, gen_length, use_regression=True):
         block_size_rel = rel_values[predicted_class]
     
     return block_size_rel
+
+
+def run_inference_xgboost(
+    model, 
+    tokenizer, 
+    device, 
+    scheduler_path,
+    questions_csv_path="./data/gsm8k_correct.csv",
+    num_questions=None,
+    gen_length=32,
+    steps=32,
+    temperature=0.,
+    cfg_scale=0.,
+    remasking='low_confidence',
+    block_size_offset=0,
+    max_block_size=10,
+    use_regression=True,
+    instruction=None,
+    output_path="./output/charles_inference_results.csv"
+):
+    """
+    Run XGBoost-guided dynamic block size inference (CHARLES method).
+    
+    Args:
+        model: LLaDA model
+        tokenizer: Tokenizer
+        device: Device (cuda/cpu)
+        scheduler_path: Path to trained XGBoost model (.json or .ubj file)
+        questions_csv_path: Path to CSV file with questions (default: gsm8k_correct.csv)
+        num_questions: Limit number of questions to process (None = all)
+        gen_length: Generation length
+        steps: Number of steps (kept for compatibility)
+        temperature: Sampling temperature
+        cfg_scale: CFG scale
+        remasking: Remasking strategy
+        block_size_offset: Conservative offset to subtract from predicted block_size
+        max_block_size: Maximum allowed block size (should match training data cap)
+        use_regression: If True, use XGBRegressor; else XGBClassifier
+        instruction: Optional instruction prefix for questions
+        output_path: Path to save results CSV
+    
+    Returns:
+        results_df: DataFrame with inference results
+    """
+    import pandas as pd
+    import time
+    import xgboost as xgb
+    from generate import generate_charles, extract_numerical
+    
+    print("="*80)
+    print("🚀 CHARLES: XGBoost-Guided Dynamic Block Size Inference")
+    print("="*80)
+    
+    # Load XGBoost scheduler
+    print(f"📥 Loading XGBoost scheduler from: {scheduler_path}")
+    scheduler = xgb.XGBRegressor() if use_regression else xgb.XGBClassifier()
+    scheduler.load_model(scheduler_path)
+    print(f"✅ Scheduler loaded ({'Regression' if use_regression else 'Classification'} model)")
+    
+    # Load questions
+    df_questions = pd.read_csv(questions_csv_path)
+    
+    # Limit to num_questions if specified
+    if num_questions is not None:
+        df_questions = df_questions.head(num_questions)
+    
+    print(f"\n{'='*80}")
+    print("📊 GENERATION SETTINGS")
+    print(f"{'='*80}")
+    print(f"  Generation length: {gen_length}")
+    print(f"  Temperature: {temperature}")
+    print(f"  CFG scale: {cfg_scale}")
+    print(f"  Remasking: {remasking}")
+    print(f"  Block size offset: {block_size_offset} (conservative adjustment)")
+    print(f"  Max block size: {max_block_size} (matches training data cap)")
+    print(f"  Total questions: {len(df_questions)}")
+    print(f"{'='*80}\n")
+    
+    # Store results
+    results = []
+    total_start_time = time.time()
+    
+    # Loop through all questions
+    for idx, row in df_questions.iterrows():
+        question = row['question']
+        correct_answer = int(row['answer_numerical'])
+        
+        if instruction is not None:
+            question = instruction + question
+        prompt = question
+        
+        print(f"\n{'='*80}")
+        print(f"📝 Question {idx+1}/{len(df_questions)}")
+        print(f"{'='*80}")
+        print(f"Question: {prompt}")
+        print(f"Expected answer: {correct_answer}\n")
+
+        # Add special tokens for the Instruct model (not required for base model)
+        m = [{"role": "user", "content": prompt}, ]
+        prompt_formatted = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        input_ids = tokenizer(prompt_formatted)['input_ids']
+        input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
+        
+        # Run generation with XGBoost scheduler
+        print("🎯 Starting dynamic block size generation (CHARLES)...")
+        start_time = time.time()
+        
+        out, num_steps = generate_charles(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=input_ids,
+            scheduler=scheduler,
+            steps=steps,
+            gen_length=gen_length,
+            block_length=1,  # Fallback if scheduler is None
+            temperature=temperature,
+            cfg_scale=cfg_scale,
+            remasking=remasking,
+            expected_answer=correct_answer,
+            use_regression=use_regression,
+            block_size_offset=block_size_offset,
+            max_block_size=max_block_size
+        )
+        
+        end_time = time.time()
+        generation_time = end_time - start_time
+        
+        # Calculate speedup vs autoregressive (AR takes gen_length steps)
+        ar_steps = gen_length  # Autoregressive = 1 token per step = gen_length steps
+        speedup = ar_steps / num_steps if num_steps > 0 else 0
+        
+        # Decode output
+        generated_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        
+        print(f"\n{'='*80}")
+        print("✅ GENERATION COMPLETE!")
+        print(f"{'='*80}")
+        print(f"\n📄 Generated Answer:\n{generated_text}")
+        
+        # Extract numerical answer
+        predicted_answer = extract_numerical(generated_text)
+        is_correct = (predicted_answer == correct_answer) if predicted_answer is not None else False
+        
+        print(f"\n{'='*80}")
+        print("📊 RESULTS")
+        print(f"{'='*80}")
+        print(f"  Expected answer: {correct_answer}")
+        print(f"  Predicted answer: {predicted_answer}")
+        print(f"  Correct: {'✅ YES' if is_correct else '❌ NO'}")
+        print(f"\n⚡ EFFICIENCY:")
+        print(f"  AR steps (baseline): {ar_steps}")
+        print(f"  CHARLES steps: {num_steps}")
+        print(f"  Speedup: {speedup:.2f}x")
+        print(f"\n⏱️  Generation time: {generation_time:.2f} seconds")
+        print(f"  Tokens per second: {gen_length/generation_time:.2f}")
+        print(f"{'='*80}\n")
+        
+        # Store results
+        results.append({
+            'question': row['question'],
+            'correct_answer': correct_answer,
+            'predicted_answer': predicted_answer,
+            'generated_text': generated_text,
+            'is_correct': is_correct,
+            'ar_steps': ar_steps,
+            'num_steps': num_steps,
+            'speedup': speedup,
+            'generation_time': generation_time
+        })
+    
+    # Calculate overall statistics
+    total_end_time = time.time()
+    total_elapsed_time = total_end_time - total_start_time
+    
+    results_df = pd.DataFrame(results)
+    num_correct = results_df['is_correct'].sum()
+    accuracy = num_correct / len(results_df) * 100
+    
+    # Calculate average speedup for correct answers only
+    correct_df = results_df[results_df['is_correct'] == True]
+    if len(correct_df) > 0:
+        avg_speedup_correct = correct_df['speedup'].mean()
+        avg_ar_steps = correct_df['ar_steps'].mean()
+        avg_num_steps = correct_df['num_steps'].mean()
+        avg_generation_time = correct_df['generation_time'].mean()
+    else:
+        avg_speedup_correct = 0
+        avg_ar_steps = 0
+        avg_num_steps = 0
+        avg_generation_time = 0
+    
+    print(f"\n{'='*80}")
+    print("📊 OVERALL RESULTS")
+    print(f"{'='*80}")
+    print(f"  Total questions: {len(results_df)}")
+    print(f"  Correct answers: {num_correct}/{len(results_df)}")
+    print(f"  Accuracy: {accuracy:.2f}%")
+    print(f"\n⚡ EFFICIENCY (for correct answers only):")
+    print(f"  Average AR steps (baseline): {avg_ar_steps:.1f}")
+    print(f"  Average CHARLES steps: {avg_num_steps:.1f}")
+    print(f"  Average speedup: {avg_speedup_correct:.2f}x")
+    print(f"\n⏱️  TIMING:")
+    print(f"  Average generation time: {avg_generation_time:.2f} seconds")
+    print(f"  Total wall time: {total_elapsed_time:.2f} seconds ({total_elapsed_time/60:.1f} minutes)")
+    print(f"  Average wall time per question: {total_elapsed_time/len(results_df):.2f} seconds")
+    print(f"{'='*80}\n")
+    
+    # Save results to CSV
+    results_df.to_csv(output_path, index=False)
+    print(f"💾 Results saved to: {output_path}")
+    
+    return results_df

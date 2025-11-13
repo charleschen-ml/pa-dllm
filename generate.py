@@ -121,12 +121,12 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
                 outputs = model(x)
                 logits = outputs.logits  # get logits with current x
                 
-                # Debug: Check what outputs contains
-                print(f"🔍 DEBUG: outputs type = {type(outputs)}")
-                print(f"🔍 DEBUG: hasattr(outputs, 'block_size_predictions') = {hasattr(outputs, 'block_size_predictions')}")
-                if hasattr(outputs, 'block_size_predictions'):
-                    print(f"🔍 DEBUG: outputs.block_size_predictions = {outputs.block_size_predictions}")
-                    print(f"🔍 DEBUG: outputs.block_size_predictions is not None = {outputs.block_size_predictions is not None}")
+                # Debug: Check what outputs contains (DISABLED)
+                # print(f"🔍 DEBUG: outputs type = {type(outputs)}")
+                # print(f"🔍 DEBUG: hasattr(outputs, 'block_size_predictions') = {hasattr(outputs, 'block_size_predictions')}")
+                # if hasattr(outputs, 'block_size_predictions'):
+                #     print(f"🔍 DEBUG: outputs.block_size_predictions = {outputs.block_size_predictions}")
+                #     print(f"🔍 DEBUG: outputs.block_size_predictions is not None = {outputs.block_size_predictions is not None}")
                 
                 # Extract scheduler predictions if available
                 if hasattr(outputs, 'block_size_predictions') and outputs.block_size_predictions is not None:
@@ -289,30 +289,30 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             position_relative = round(curr_pos / gen_length, 4)
             features = additional_features.get(curr_pos, {})
             
-            # Print ALL 30 features for debugging
-            print(f"\n{'='*80}")
-            print(f"🔍 ALL FEATURES at curr_pos={curr_pos} (token position)")
-            print(f"{'='*80}")
+            # Print ALL 30 features for debugging (DISABLED)
+            # print(f"\n{'='*80}")
+            # print(f"🔍 ALL FEATURES at curr_pos={curr_pos} (token position)")
+            # print(f"{'='*80}")
             features['position_relative'] = position_relative
             
             # Feature names in order (30 total)
-            feature_names = [
-                'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin',
-                'mean_confidence', 'mean_entropy', 'shannon_mean_entropy', 
-                'conf_std', 'entropy_std', 'shannon_entropy_std',
-                'conf_1', 'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min',
-                'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
-                'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
-                'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9'
-            ]
-            
-            for i, name in enumerate(feature_names, 1):
-                value = features.get(name, 'N/A')
-                if isinstance(value, (int, float)):
-                    print(f"  {i:2d}. {name:25s} = {value:.4f}")
-                else:
-                    print(f"  {i:2d}. {name:25s} = {value}")
-            print(f"{'='*80}\n")
+            # feature_names = [
+            #     'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin',
+            #     'mean_confidence', 'mean_entropy', 'shannon_mean_entropy', 
+            #     'conf_std', 'entropy_std', 'shannon_entropy_std',
+            #     'conf_1', 'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min',
+            #     'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
+            #     'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
+            #     'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9'
+            # ]
+            # 
+            # for i, name in enumerate(feature_names, 1):
+            #     value = features.get(name, 'N/A')
+            #     if isinstance(value, (int, float)):
+            #         print(f"  {i:2d}. {name:25s} = {value:.4f}")
+            #     else:
+            #         print(f"  {i:2d}. {name:25s} = {value}")
+            # print(f"{'='*80}\n")
             
             # Get relative block size from XGBoost
             block_size_rel = predict_block_size(
