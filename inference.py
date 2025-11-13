@@ -2010,7 +2010,7 @@ def predict_block_size(scheduler, features, gen_length, use_regression=True):
     return block_size_rel
 
 
-def run_inference_xgboost(
+def run_inference_with_scheduler(
     model, 
     tokenizer, 
     device, 
@@ -2026,16 +2026,19 @@ def run_inference_xgboost(
     max_block_size=10,
     use_regression=True,
     instruction=None,
-    output_path="./output/charles_inference_results.csv"
+    output_path="./output/charles_inference_results.csv",
+    scheduler_type='xgboost'
 ):
     """
-    Run XGBoost-guided dynamic block size inference (CHARLES method).
+    Run scheduler-guided dynamic block size inference (CHARLES method).
+    Supports both XGBoost and Neural Scheduler Head.
     
     Args:
         model: LLaDA model
         tokenizer: Tokenizer
         device: Device (cuda/cpu)
-        scheduler_path: Path to trained XGBoost model (.json or .ubj file)
+        scheduler_path: Path to trained XGBoost model (.json or .ubj file).
+                        Not used if scheduler_type='neural'.
         questions_csv_path: Path to CSV file with questions (default: gsm8k_correct.csv)
         num_questions: Limit number of questions to process (None = all)
         gen_length: Generation length
@@ -2045,9 +2048,10 @@ def run_inference_xgboost(
         remasking: Remasking strategy
         block_size_offset: Conservative offset to subtract from predicted block_size
         max_block_size: Maximum allowed block size (should match training data cap)
-        use_regression: If True, use XGBRegressor; else XGBClassifier
+        use_regression: If True, use XGBRegressor; else XGBClassifier (only for XGBoost)
         instruction: Optional instruction prefix for questions
         output_path: Path to save results CSV
+        scheduler_type: Type of scheduler. 'xgboost' or 'neural' (default: 'xgboost')
     
     Returns:
         results_df: DataFrame with inference results
@@ -2058,14 +2062,25 @@ def run_inference_xgboost(
     from generate import generate_charles, extract_numerical
     
     print("="*80)
-    print("🚀 CHARLES: XGBoost-Guided Dynamic Block Size Inference")
+    if scheduler_type == 'neural':
+        print("🚀 CHARLES: Neural Scheduler Head-Guided Dynamic Block Size Inference")
+    elif scheduler_type == 'xgboost':
+        print("🚀 CHARLES: XGBoost-Guided Dynamic Block Size Inference")
+    else:
+        print(f"🚀 CHARLES: Dynamic Block Size Inference (Unknown scheduler type: {scheduler_type})")
     print("="*80)
     
-    # Load XGBoost scheduler
-    print(f"📥 Loading XGBoost scheduler from: {scheduler_path}")
-    scheduler = xgb.XGBRegressor() if use_regression else xgb.XGBClassifier()
-    scheduler.load_model(scheduler_path)
-    print(f"✅ Scheduler loaded ({'Regression' if use_regression else 'Classification'} model)")
+    # Load scheduler (only for XGBoost)
+    if scheduler_type == 'xgboost':
+        print(f"📥 Loading XGBoost scheduler from: {scheduler_path}")
+        scheduler = xgb.XGBRegressor() if use_regression else xgb.XGBClassifier()
+        scheduler.load_model(scheduler_path)
+        print(f"✅ Scheduler loaded ({'Regression' if use_regression else 'Classification'} model)")
+    elif scheduler_type == 'neural':
+        print(f"📥 Using Neural Scheduler Head (trained with model)")
+        scheduler = None  # Not needed for neural scheduler
+    else:
+        raise ValueError(f"Unknown scheduler_type: {scheduler_type}. Must be 'neural' or 'xgboost'")
     
     # Load questions
     df_questions = pd.read_csv(questions_csv_path)
@@ -2129,7 +2144,8 @@ def run_inference_xgboost(
             expected_answer=correct_answer,
             use_regression=use_regression,
             block_size_offset=block_size_offset,
-            max_block_size=max_block_size
+            max_block_size=max_block_size,
+            scheduler_type=scheduler_type
         )
         
         end_time = time.time()

@@ -23,7 +23,7 @@ importlib.reload(inference)
 # Load inference functions
 from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference, generate_one_sample
 from inference import augment_one_sample, augment_one_sample_greedy, augment_one_sample_dispatch, load_gsm8k, augment_multiple_samples
-from inference import run_inference_xgboost
+from inference import run_inference_with_scheduler
 from generate import generate_vanilla, generate_custom, generate_charles
 
 # FASTEST: Load model weights and recreate architecture
@@ -199,7 +199,7 @@ if __name__ == '__main__':
     USE_GREEDY = True  # True: use greedy mode when generating training samples, False: use AR mode
     USE_PARALLEL = False  # Set to False for sequential mode (needed for batch inference)
     NUM_GPUS = 4  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = 100  # Number of questions to process (None = process all questions in CSV)
+    NUM_QUESTIONS = 1  # Number of questions to process (None = process all questions in CSV)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -396,11 +396,12 @@ if __name__ == '__main__':
     #     print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
 
     ########################################################
-    # Run inference with XGBoost scheduler (CHARLES)
+    # Run inference with scheduler (CHARLES)
     ########################################################
     # Configuration
-    SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model
-    USE_REGRESSION = True  # True for regression, False for classification
+    SCHEDULER_TYPE = 'xgboost'  # 'xgboost' or 'neural'
+    SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model (only for 'xgboost')
+    USE_REGRESSION = True  # True for regression, False for classification (only for 'xgboost')
     GEN_LENGTH = 32
     STEPS = 32  # Not used in dynamic version, kept for compatibility
     TEMPERATURE = 0.
@@ -409,8 +410,8 @@ if __name__ == '__main__':
     BLOCK_SIZE_OFFSET = 0  # Conservative offset: subtract from predicted block_size (0=no offset)
     MAX_BLOCK_SIZE = 10  # Maximum allowed block size (should match training data cap)
     
-    # Run XGBoost inference
-    results_df = run_inference_xgboost(
+    # Run scheduler inference
+    results_df = run_inference_with_scheduler(
         model=model,
         tokenizer=tokenizer,
         device=device,
@@ -426,5 +427,6 @@ if __name__ == '__main__':
         max_block_size=MAX_BLOCK_SIZE,
         use_regression=USE_REGRESSION,
         instruction=instruction,
-        output_path="./output/charles_inference_results.csv"
+        output_path="./output/charles_inference_results.csv",
+        scheduler_type=SCHEDULER_TYPE
     )

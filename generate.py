@@ -25,6 +25,189 @@ def extract_numerical(text):
     except ValueError:
         return None
 
+def predict_block_size_neural(
+    model,
+    x,
+    curr_pos,
+    gen_length,
+    block_size_offset=0,
+    max_block_size=10,
+    block_length=1,
+    verbose=True
+):
+    """
+    Predict block size using neural scheduler head (trained with model).
+    
+    Args:
+        model: LLaDA model with scheduler_head
+        x: Current sequence tensor [batch_size, seq_len]
+        curr_pos: Current position in generation
+        gen_length: Total generation length
+        block_size_offset: Conservative offset to subtract from predicted block_size
+        max_block_size: Maximum allowed block size
+        block_length: Fallback block size if scheduler head not available
+        verbose: If True, print prediction details
+    
+    Returns:
+        block_size: Final predicted block size (int)
+        logits: Model logits output [batch_size, seq_len, vocab_size]
+    """
+    
+    # Run forward pass with token_positions to get scheduler predictions
+    token_positions = torch.tensor([curr_pos], device=x.device, dtype=torch.long)
+    
+    outputs = model(
+        x,
+        token_positions=token_positions,
+        block_size_rel_labels=None  # No labels for inference
+    )
+    
+    logits = outputs.logits
+    
+    # Extract scheduler prediction if available
+    if hasattr(outputs, 'block_size_predictions') and outputs.block_size_predictions is not None:
+        # Get prediction at curr_pos
+        predictions = outputs.block_size_predictions[0]  # [seq_len]
+        block_size_rel = predictions[curr_pos].item()
+        
+        # Convert to absolute block size based on REMAINING tokens
+        remaining_tokens = gen_length - curr_pos
+        block_size_raw = block_size_rel * remaining_tokens
+        block_size = int(round(block_size_raw))
+        
+        # Apply conservative offset (subtract to make block size smaller)
+        block_size_before_offset = block_size
+        block_size = block_size - block_size_offset
+        
+        # Ensure block_size is at least 1 and at most min(remaining_tokens, max_block_size)
+        block_size_final = max(1, min(block_size, remaining_tokens, max_block_size))
+        
+        # Print prediction details
+        if verbose:
+            print(f"📊 PREDICTION (Neural Scheduler Head):")
+            print(f"   block_size_rel (Neural output) = {block_size_rel:.4f}")
+            print(f"   remaining_tokens               = {remaining_tokens}")
+            print(f"   block_size_raw                 = {block_size_rel:.4f} × {remaining_tokens} = {block_size_raw:.2f}")
+            print(f"   block_size (rounded)           = {block_size_before_offset}")
+            if block_size_offset > 0:
+                print(f"   block_size (after offset -{block_size_offset})  = {block_size}")
+            print(f"   block_size_final (clamped 1-{max_block_size}) = {block_size_final}")
+            print(f"{'='*80}\n")
+        
+        return block_size_final, logits
+    
+    else:
+        # Fallback: scheduler head not available
+        if verbose:
+            print(f"⚠️  WARNING: Scheduler head not available, using fallback block_length={block_length}")
+        
+        remaining_tokens = gen_length - curr_pos
+        block_size = min(block_length, remaining_tokens)
+        block_size = max(1, block_size - block_size_offset)
+        
+        return block_size, logits
+
+
+def predict_block_size_xgboost(
+    logits,
+    x,
+    gen_start,
+    gen_length,
+    tokenizer,
+    curr_pos,
+    scheduler,
+    use_regression=True,
+    block_size_offset=0,
+    max_block_size=10,
+    block_length=1,
+    verbose=True
+):
+    """
+    Predict block size using XGBoost scheduler with extracted features.
+    
+    Args:
+        logits: Model logits output [batch_size, seq_len, vocab_size]
+        x: Current sequence tensor [batch_size, seq_len]
+        gen_start: Starting position of generation
+        gen_length: Total generation length
+        tokenizer: Tokenizer for feature extraction
+        curr_pos: Current position in generation
+        scheduler: XGBoost model (or None for fallback)
+        use_regression: If True, use XGBRegressor; else XGBClassifier
+        block_size_offset: Conservative offset to subtract from predicted block_size
+        max_block_size: Maximum allowed block size
+        block_length: Fallback block size if scheduler is None
+        verbose: If True, print prediction details
+    
+    Returns:
+        block_size: Final predicted block size (int)
+    """
+    
+    if scheduler is not None:
+        # Extract features from logits
+        from inference import predict_block_size
+        
+        (initial_confidence, initial_entropy, initial_shannon_entropy, 
+         additional_features, ar_context_tokens) = extract_features(
+            logits=logits,
+            x=x,
+            gen_start=gen_start,
+            gen_length=gen_length,
+            tokenizer=tokenizer,
+            verbose=False,
+            curr_pos=curr_pos
+        )
+        
+        position_relative = round(curr_pos / gen_length, 4)
+        features = additional_features.get(curr_pos, {})
+        features['position_relative'] = position_relative
+        
+        # Get relative block size from XGBoost
+        block_size_rel = predict_block_size(
+            scheduler=scheduler,
+            features=features,
+            gen_length=gen_length,
+            use_regression=use_regression
+        )
+        
+        # Convert to absolute block size based on REMAINING tokens
+        remaining_tokens = gen_length - curr_pos
+        block_size_raw = block_size_rel * remaining_tokens
+        block_size = int(round(block_size_raw))
+        
+        # Apply conservative offset (subtract to make block size smaller)
+        block_size_before_offset = block_size
+        block_size = block_size - block_size_offset
+        
+        # Ensure block_size is at least 1 and at most min(remaining_tokens, max_block_size)
+        # Cap at max_block_size to match training data distribution
+        block_size_final = max(1, min(block_size, remaining_tokens, max_block_size))
+        
+        # Print prediction details
+        if verbose:
+            print(f"📊 PREDICTION:")
+            print(f"   block_size_rel (XGBoost output) = {block_size_rel:.4f}")
+            print(f"   remaining_tokens                = {remaining_tokens}")
+            print(f"   block_size_raw                  = {block_size_rel:.4f} × {remaining_tokens} = {block_size_raw:.2f}")
+            print(f"   block_size (rounded)            = {block_size_before_offset}")
+            if block_size_offset > 0:
+                print(f"   block_size (after offset -{block_size_offset}) = {block_size}")
+            print(f"   block_size_final (clamped 1-{max_block_size}) = {block_size_final}")
+            print(f"{'='*80}\n")
+        
+        return block_size_final
+    
+    else:
+        # Fallback: use fixed block_length
+        remaining_tokens = gen_length - curr_pos
+        block_size = min(block_length, remaining_tokens)
+        
+        # Apply conservative offset even for fallback mode
+        block_size = max(1, block_size - block_size_offset)
+        
+        return block_size
+
+
 def add_gumbel_noise(logits, temperature):
     '''
     The Gumbel max is a method for sampling categorical distributions.
@@ -194,15 +377,17 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
 @torch.no_grad()
 def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_length=128, block_length=128, 
                      temperature=0., cfg_scale=0., remasking='low_confidence', mask_id=126336, 
-                     expected_answer=None, use_regression=True, block_size_offset=0, max_block_size=10):
+                     expected_answer=None, use_regression=True, block_size_offset=0, max_block_size=10,
+                     scheduler_type='xgboost'):
     '''
-    Dynamic block size generation using XGBoost scheduler.
+    Dynamic block size generation using scheduler (XGBoost or Neural Scheduler Head).
     
     Args:
         model: Mask predictor.
         tokenizer: Tokenizer for decoding outputs.
         prompt: A tensor of shape (1, L).
         scheduler: Trained XGBoost model for predicting block sizes. If None, uses fixed block_length.
+                   Not used if scheduler_type='neural'.
         steps: Sampling steps (not used in dynamic version, kept for compatibility).
         gen_length: Generated answer length.
         block_length: Default block length if scheduler is None.
@@ -211,9 +396,12 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         remasking: Remasking strategy. 'low_confidence' or 'random'.
         mask_id: The token id of [MASK] is 126336.
         expected_answer: Optional, if set will compare against `extract_numerical()` for correctness logging.
-        use_regression: If True, scheduler is regression model; else classification.
+        use_regression: If True, scheduler is regression model; else classification (only for XGBoost).
         block_size_offset: Integer offset to subtract from predicted block_size for conservative sizing (default: 0).
         max_block_size: Maximum allowed block size to cap predictions (default: 10, matching training data cap).
+        scheduler_type: Type of scheduler to use. 'xgboost' or 'neural' (default: 'xgboost').
+                        'xgboost': Uses XGBoost model with extracted features
+                        'neural': Uses trained scheduler head in the model
     '''
 
     # Create x = prompt + completion 
@@ -232,7 +420,12 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
     print(f"\n🎯 Generation settings:")
     print(f"   - gen_length: {gen_length} tokens")
     print(f"   - mask_id: {mask_id}")
-    print(f"   - Scheduler: {'XGBoost' if scheduler is not None else 'Fixed block size'}")
+    if scheduler_type == 'neural':
+        print(f"   - Scheduler: Neural Scheduler Head (end-to-end learned)")
+    elif scheduler_type == 'xgboost':
+        print(f"   - Scheduler: {'XGBoost' if scheduler is not None else 'Fixed block size'}")
+    else:
+        print(f"   - Scheduler: Unknown type '{scheduler_type}'")
     print(f"{'='*80}\n")
 
     prompt_index = (x != mask_id)  # create boolean mask with prompt = T, completion = F
@@ -255,104 +448,58 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         decoded_x = tokenizer.batch_decode(x, skip_special_tokens=False)[0]
         print(f"The decoded x:\n {decoded_x}")
 
-        # Get logits for current state
-        if cfg_scale > 0.:
-            un_x = x.clone()
-            un_x[prompt_index] = mask_id
-            x_ = torch.cat([x, un_x], dim=0)
-            logits = model(x_).logits
-            logits, un_logits = torch.chunk(logits, 2, dim=0)
-            logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+        # Get logits and predict block_size (method depends on scheduler_type)
+        if scheduler_type == 'neural':
+            # Neural scheduler: get predictions from scheduler head
+            if cfg_scale > 0.:
+                # CFG not yet supported with neural scheduler
+                raise NotImplementedError("CFG (cfg_scale > 0) not yet supported with neural scheduler")
+            
+            block_size, logits = predict_block_size_neural(
+                model=model,
+                x=x,
+                curr_pos=curr_pos,
+                gen_length=gen_length,
+                block_size_offset=block_size_offset,
+                max_block_size=max_block_size,
+                block_length=block_length,
+                verbose=True
+            )
+        
+        elif scheduler_type == 'xgboost':
+            # XGBoost scheduler: get logits first, then extract features
+            if cfg_scale > 0.:
+                un_x = x.clone()
+                un_x[prompt_index] = mask_id
+                x_ = torch.cat([x, un_x], dim=0)
+                logits = model(x_).logits
+                logits, un_logits = torch.chunk(logits, 2, dim=0)
+                logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+            else:
+                logits = model(x).logits  # get logits with current x
+            
+            block_size = predict_block_size_xgboost(
+                logits=logits,
+                x=x,
+                gen_start=gen_start,
+                gen_length=gen_length,
+                tokenizer=tokenizer,
+                curr_pos=curr_pos,
+                scheduler=scheduler,
+                use_regression=use_regression,
+                block_size_offset=block_size_offset,
+                max_block_size=max_block_size,
+                block_length=block_length,
+                verbose=True
+            )
+        
         else:
-            logits = model(x).logits  # get logits with current x
+            raise ValueError(f"Unknown scheduler_type: {scheduler_type}. Must be 'neural' or 'xgboost'")
 
         # Generate tokens for current block (semi-AR: unmask next N tokens left-to-right)
         # Use the predicted tokens with added noise for sampling
         logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
         x0 = torch.argmax(logits_with_noise, dim=-1)
-
-        # Extract features
-        (initial_confidence, initial_entropy, initial_shannon_entropy, 
-         additional_features, ar_context_tokens) = extract_features(
-            logits=logits,
-            x=x,
-            gen_start=gen_start,
-            gen_length=gen_length,
-            tokenizer=tokenizer,
-            verbose=False,
-            curr_pos=curr_pos
-        )
-
-        # Predict block_size using scheduler
-        if scheduler is not None:
-            from inference import predict_block_size
-            position_relative = round(curr_pos / gen_length, 4)
-            features = additional_features.get(curr_pos, {})
-            
-            # Print ALL 30 features for debugging (DISABLED)
-            # print(f"\n{'='*80}")
-            # print(f"🔍 ALL FEATURES at curr_pos={curr_pos} (token position)")
-            # print(f"{'='*80}")
-            features['position_relative'] = position_relative
-            
-            # Feature names in order (30 total)
-            # feature_names = [
-            #     'position_relative', 'conf_0', 'entropy_0', 'shannon_entropy_0', 'top1_margin',
-            #     'mean_confidence', 'mean_entropy', 'shannon_mean_entropy', 
-            #     'conf_std', 'entropy_std', 'shannon_entropy_std',
-            #     'conf_1', 'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min',
-            #     'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
-            #     'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
-            #     'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9'
-            # ]
-            # 
-            # for i, name in enumerate(feature_names, 1):
-            #     value = features.get(name, 'N/A')
-            #     if isinstance(value, (int, float)):
-            #         print(f"  {i:2d}. {name:25s} = {value:.4f}")
-            #     else:
-            #         print(f"  {i:2d}. {name:25s} = {value}")
-            # print(f"{'='*80}\n")
-            
-            # Get relative block size from XGBoost
-            block_size_rel = predict_block_size(
-                scheduler=scheduler,
-                features=features,
-                gen_length=gen_length,
-                use_regression=use_regression
-            )
-            
-            # Convert to absolute block size based on REMAINING tokens
-            remaining_tokens = gen_length - curr_pos
-            block_size_raw = block_size_rel * remaining_tokens
-            block_size = int(round(block_size_raw))
-            
-            # Apply conservative offset (subtract to make block size smaller)
-            block_size_before_offset = block_size
-            block_size = block_size - block_size_offset
-            
-            # Ensure block_size is at least 1 and at most min(remaining_tokens, max_block_size)
-            # Cap at max_block_size to match training data distribution
-            block_size_final = max(1, min(block_size, remaining_tokens, max_block_size))
-            
-            # Print prediction details
-            print(f"📊 PREDICTION:")
-            print(f"   block_size_rel (XGBoost output) = {block_size_rel:.4f}")
-            print(f"   remaining_tokens                = {remaining_tokens}")
-            print(f"   block_size_raw                  = {block_size_rel:.4f} × {remaining_tokens} = {block_size_raw:.2f}")
-            print(f"   block_size (rounded)            = {block_size_before_offset}")
-            if block_size_offset > 0:
-                print(f"   block_size (after offset -{block_size_offset}) = {block_size}")
-            print(f"   block_size_final (clamped 1-{max_block_size}) = {block_size_final}")
-            print(f"{'='*80}\n")
-            
-            block_size = block_size_final
-        else:
-            remaining_tokens = gen_length - curr_pos
-            block_size = min(block_length, remaining_tokens)
-            
-            # Apply conservative offset even for fallback mode
-            block_size = max(1, block_size - block_size_offset)
 
         # Hardcode block_size for first iteration only (for debugging)
         # if curr_pos == 0:
@@ -399,8 +546,6 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         out_text = tokenizer.batch_decode(x[:, prompt.shape[1]:], skip_special_tokens=True)[0]
         print(f"\n{'='*80}")
         print(f"🔄 Step: Position {curr_pos-block_size} → {curr_pos}/{gen_length}")
-        print(f"📊 Predicted block_size_rel: {block_size_rel:.4f}" if 'block_size_rel' in locals() else "📊 Predicted block_size_rel: N/A")
-        print(f"📊 Remaining tokens: {remaining_tokens}")
         print(f"📊 Predicted block_size: {block_size} tokens")
         print(f"📝 Current generation:\n{out_text}")
         
