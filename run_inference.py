@@ -195,7 +195,8 @@ if __name__ == '__main__':
     ########################################################
     # CONFIGURATION: Choose mode
     ########################################################
-    USE_CUSTOM_MODEL = False  # True: use custom local modeling_llada.py, False: use HF model
+    USE_CUSTOM_MODEL = True  # True: use custom local modeling_llada.py, False: use HF model
+                               # NOTE: Will be automatically set to True if SCHEDULER_TYPE='neural'
     USE_GREEDY = True  # True: use greedy mode when generating training samples, False: use AR mode
     USE_PARALLEL = False  # Set to False for sequential mode (needed for batch inference)
     NUM_GPUS = 4  # Only used if USE_PARALLEL=True
@@ -399,7 +400,19 @@ if __name__ == '__main__':
     # Run inference with scheduler (CHARLES)
     ########################################################
     # Configuration
-    SCHEDULER_TYPE = 'xgboost'  # 'xgboost' or 'neural'
+    SCHEDULER_TYPE = 'neural'  # 'xgboost' or 'neural'
+    
+    # Auto-enable custom model if using neural scheduler
+    if SCHEDULER_TYPE == 'neural' and not USE_CUSTOM_MODEL:
+        print("\n" + "="*80)
+        print("⚠️  CRITICAL: Neural scheduler requires custom model!")
+        print("="*80)
+        print("The HuggingFace model doesn't have scheduler head modifications.")
+        print("Please set USE_CUSTOM_MODEL = True at the top of the script")
+        print("and re-run to load the model with scheduler_head enabled.")
+        print("="*80 + "\n")
+        raise ValueError("USE_CUSTOM_MODEL must be True when SCHEDULER_TYPE='neural'")
+    
     SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model (only for 'xgboost')
     USE_REGRESSION = True  # True for regression, False for classification (only for 'xgboost')
     GEN_LENGTH = 32
