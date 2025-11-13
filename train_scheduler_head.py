@@ -371,14 +371,22 @@ def main():
     
     # Configuration
     CONFIG = {
+        # Data config
         # 'data_path': 'data/sft_training_samples_greedy.json',
         'data_path': 'data/sft_training_samples_multi_greedy_parallel.json',
         'num_questions': 100,  # Number of questions to use (None = use all)
-        'batch_size': 8,
-        'learning_rate': 1e-4,
-        'num_epochs': 40,
         'val_split': 0.1,  # 10% for validation
+        
+        # Training config
+        'batch_size': 8,
+        'num_epochs': 40,
         'early_stopping_patience': 5,  # Stop if no improvement for N epochs
+        
+        # Optimizer config
+        'learning_rate': 1e-4,
+        'weight_decay': 0.01,  # L2 regularization for AdamW
+        
+        # System config
         'checkpoint_dir': 'checkpoints/scheduler_head',
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'seed': SEED,
@@ -473,9 +481,17 @@ def main():
     print("\n[5/6] Setting up optimizer...")
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=CONFIG['learning_rate']
+        lr=CONFIG['learning_rate'],
+        weight_decay=CONFIG['weight_decay']
     )
-    print(f"✅ Optimizer: AdamW with lr={CONFIG['learning_rate']}")
+    print(f"✅ Optimizer: AdamW (lr={CONFIG['learning_rate']}, weight_decay={CONFIG['weight_decay']})")
+    
+    # Debug: Verify optimizer hyperparameters
+    print(f"🔍 Optimizer param_groups[0] verification:")
+    print(f"   lr: {optimizer.param_groups[0]['lr']}")
+    print(f"   weight_decay: {optimizer.param_groups[0]['weight_decay']}")
+    print(f"   betas: {optimizer.param_groups[0]['betas']}")
+    print(f"   eps: {optimizer.param_groups[0]['eps']}")
     
     # 6. Training loop
     print("\n[6/6] Starting training...")
