@@ -27,8 +27,10 @@ def extract_numerical(text):
 
 def predict_block_size_neural(
     model,
+    tokenizer,
     x,
     curr_pos,
+    gen_start,
     gen_length,
     block_size_offset=0,
     max_block_size=10,
@@ -40,8 +42,10 @@ def predict_block_size_neural(
     
     Args:
         model: LLaDA model with scheduler_head
+        tokenizer: Tokenizer for decoding (for debug prints)
         x: Current sequence tensor [batch_size, seq_len]
-        curr_pos: Current position in generation
+        curr_pos: Current position in generation (relative to gen_start)
+        gen_start: Starting position of generation in full sequence (prompt length)
         gen_length: Total generation length
         block_size_offset: Conservative offset to subtract from predicted block_size
         max_block_size: Maximum allowed block size
@@ -53,8 +57,16 @@ def predict_block_size_neural(
         logits: Model logits output [batch_size, seq_len, vocab_size]
     """
     
+    # Calculate absolute position in full sequence (prompt + generation)
+    abs_pos = gen_start + curr_pos
+    
     # Run forward pass with token_positions to get scheduler predictions
-    token_positions = torch.tensor([curr_pos], device=x.device, dtype=torch.long)
+    token_positions = torch.tensor([abs_pos], device=x.device, dtype=torch.long)
+    
+    print(f"🔍 DEBUG generate.py: x.shape = {x.shape}")
+    print(f"🔍 DEBUG generate.py: curr_pos = {curr_pos}, gen_start = {gen_start}, abs_pos = {abs_pos}")
+    decoded_text = tokenizer.decode(x[0].cpu().tolist(), skip_special_tokens=False)
+    print(f"🔍 DEBUG generate.py: decoded text = {decoded_text[:]}...")  # First 200 chars
     
     outputs = model(
         x,
@@ -66,9 +78,9 @@ def predict_block_size_neural(
     
     # Extract scheduler prediction if available
     if hasattr(outputs, 'block_size_predictions') and outputs.block_size_predictions is not None:
-        # Get prediction at curr_pos
+        # Get prediction at absolute position
         predictions = outputs.block_size_predictions[0]  # [seq_len]
-        block_size_rel = predictions[curr_pos].item()
+        block_size_rel = predictions[abs_pos].item()
         
         # Convert to absolute block size based on REMAINING tokens
         remaining_tokens = gen_length - curr_pos
@@ -457,8 +469,10 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             
             block_size, logits = predict_block_size_neural(
                 model=model,
+                tokenizer=tokenizer,
                 x=x,
                 curr_pos=curr_pos,
+                gen_start=gen_start,
                 gen_length=gen_length,
                 block_size_offset=block_size_offset,
                 max_block_size=max_block_size,

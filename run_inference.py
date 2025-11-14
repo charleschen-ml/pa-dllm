@@ -229,6 +229,13 @@ if __name__ == '__main__':
     else:
         print("📦 Loading model for sequential mode...")
         model, tokenizer, device = load_model(model_args, use_custom=USE_CUSTOM_MODEL)
+        
+        # If using neural scheduler, load the trained scheduler head weights
+        if USE_CUSTOM_MODEL and hasattr(model, 'model') and hasattr(model.model.transformer, 'scheduler_head'):
+            from inf_scheduler_head import load_trained_scheduler_head
+            SCHEDULER_HEAD_CHECKPOINT = 'checkpoints/scheduler_head/scheduler_head_best.pt'
+            print(f"\n🧠 Loading trained scheduler head weights from {SCHEDULER_HEAD_CHECKPOINT}...")
+            model = load_trained_scheduler_head(model, SCHEDULER_HEAD_CHECKPOINT)
 
     ########################################################
     # Instruction to prepend to each question
