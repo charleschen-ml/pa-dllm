@@ -517,7 +517,7 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
 
         # Hardcode block_size for first iteration only (for debugging)
         # if curr_pos == 0:
-        #     block_size = 2
+        #     block_size = 7
         # After first iteration, use scheduler/default block_size
 
         # Print decoded x and x0
