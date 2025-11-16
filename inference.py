@@ -672,6 +672,7 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
             base_block_length=base_block_length, 
             manual_settings=current_settings,
         )
+        print(f"📊 Calculated block_sizes: {block_sizes}")
         
         if block_sizes is None:
             continue

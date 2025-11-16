@@ -23,8 +23,9 @@ importlib.reload(inference)
 # Load inference functions
 from inference import run_inference_batch, calculate_score, run_greedy_inference, run_inference, generate_one_sample
 from inference import augment_one_sample, augment_one_sample_greedy, augment_one_sample_dispatch, load_gsm8k, augment_multiple_samples
-from inference import run_inference_with_scheduler
+from inference import run_inference_with_scheduler, write_to_json_csv
 from generate import generate_vanilla, generate_custom, generate_charles
+from calculate_interpolations import calculate_interpolations
 
 # FASTEST: Load model weights and recreate architecture
 print("Loading saved model (fast method)...")
@@ -191,6 +192,150 @@ def load_model(model_args, use_custom=False):
     return model, tokenizer, device
 
 
+def generate_interpolations(
+    model,
+    tokenizer,
+    device,
+    model_args,
+    greedy_csv_path,
+    output_csv_path,
+    num_questions=None,
+    instruction=None
+):
+    """
+    Generate interpolated training samples from greedy baseline samples.
+    
+    For each question in the greedy CSV:
+    1. Extract the prompt (from position=0)
+    2. Extract the greedy block_size sequence
+    3. Calculate interpolations using calculate_interpolations()
+    4. Generate samples for each interpolation setting
+    5. Write to output CSV
+    
+    Args:
+        model: Loaded model
+        tokenizer: Loaded tokenizer
+        device: Device (cuda/cpu)
+        model_args: ModelConfig object
+        greedy_csv_path: Path to greedy baseline CSV (e.g., 'data/sft_training_samples_multi_greedy_parallel.csv')
+        output_csv_path: Path to output interpolated samples CSV
+        num_questions: Number of questions to process (None = process all)
+        instruction: Optional instruction prefix to use when calling generate_one_sample
+    """
+    print(f"\n{'='*80}")
+    print(f"🔄 GENERATING INTERPOLATIONS")
+    print(f"{'='*80}")
+    print(f"📖 Reading greedy samples from: {greedy_csv_path}")
+    print(f"💾 Will write interpolations to: {output_csv_path}")
+    
+    # Read greedy CSV
+    start_time = time.time()
+    df = pd.read_csv(greedy_csv_path)
+    print(f"✅ Loaded {len(df)} rows from greedy CSV")
+    
+    # Load GSM8K answers (question_id is the row index in gsm8k_correct.csv)
+    gsm8k_df = pd.read_csv("./data/gsm8k_correct.csv")
+    print(f"✅ Loaded {len(gsm8k_df)} answers from gsm8k_correct.csv")
+    
+    # Group by question_id
+    grouped = df.groupby('question_id')
+    total_questions = len(grouped)
+    print(f"📊 Found {total_questions} unique questions in CSV")
+    
+    # Limit to num_questions if specified
+    if num_questions is not None:
+        grouped = list(grouped)[:num_questions]
+        print(f"🎯 Processing first {num_questions} questions (out of {total_questions} total)")
+    else:
+        grouped = list(grouped)
+        print(f"🎯 Processing all {total_questions} questions")
+    
+    # Process each question
+    all_interpolated_samples = []
+    for q_idx, (question_id, group_df) in enumerate(grouped, 1):
+        print(f"\n{'─'*80}")
+        print(f"📝 Processing question {q_idx}/{len(grouped)} (question_id={question_id})")
+        
+        # Sort by position to ensure correct order
+        group_df = group_df.sort_values('position')
+        
+        # Extract prompt from position=0 row
+        prompt_row = group_df[group_df['position'] == 0].iloc[0]
+        prompt = prompt_row['question']  # This already has the instruction prepended
+        
+        # Look up correct answer from gsm8k_correct.csv using question_id as row index
+        correct_answer = gsm8k_df.iloc[question_id]['answer_numerical']
+        print(f"   Correct answer: {correct_answer}")
+        
+        # Reconstruct block_size list from all rows
+        block_size_greedy = group_df['block_size'].tolist()
+        print(f"   Greedy block_size: {block_size_greedy}")
+        
+        # Generate interpolations
+        interpolations = calculate_interpolations(block_size_greedy)
+        print(f"   Generated {len(interpolations)} interpolation settings")
+        
+        # Generate samples for each interpolation
+        for interp_idx, manual_setting in enumerate(interpolations, 1):
+            # Calculate curr_pos: sum of all block sizes (total tokens generated so far)
+            curr_pos = sum(manual_setting.values())
+            curr_pos_metadata = curr_pos  # Save for metadata before function call
+            print(f"   ⚙️  Interpolation {interp_idx}/{len(interpolations)}: {manual_setting} → curr_pos={curr_pos}")
+            
+            # Call generate_one_sample with manual_settings and curr_pos
+            # Note: We pass instruction=None because prompt already has instruction prepended
+            sample_data = generate_one_sample(
+                model=model,
+                tokenizer=tokenizer,
+                device=device,
+                prompt=prompt,
+                model_args=model_args,
+                gen_length=32,  # Match training parameters
+                base_block_length=1,
+                steps=32,
+                curr_pos=curr_pos,  # Position to optimize (sum of block sizes)
+                manual_settings=manual_setting,  # Pass dict directly, not wrapped in list
+                correct_answer=correct_answer,  # Pass correct answer for optimization
+                instruction=None  # prompt already has instruction
+            )
+            
+            # Add metadata (use saved curr_pos_metadata to ensure correct value)
+            sample_data['question_id'] = question_id
+            sample_data['question'] = prompt
+            sample_data['interpolation_idx'] = interp_idx
+            sample_data['curr_pos'] = curr_pos_metadata
+            # Override position field to match curr_pos (important for CSV output)
+            if sample_data['features'] and len(sample_data['features']) > 0:
+                sample_data['features'][0] = list(sample_data['features'][0])
+                sample_data['features'][0][2] = curr_pos_metadata  # position is index 2
+            
+            all_interpolated_samples.append(sample_data)
+            print(f"      ✅ Generated sample for curr_pos={curr_pos_metadata}")
+    
+    # Save to JSON and CSV using the existing helper function
+    print(f"\n{'='*80}")
+    print(f"💾 SAVING INTERPOLATED SAMPLES")
+    print(f"{'='*80}")
+    
+    # Generate JSON path from CSV path
+    json_output_path = output_csv_path.replace('.csv', '.json')
+    
+    # Use existing write_to_json_csv function
+    write_to_json_csv(
+        all_interpolated_samples, 
+        json_output_path=json_output_path,
+        csv_output_path=output_csv_path,
+        include_question_metadata=True  # Include question_id and question columns
+    )
+    
+    elapsed_time = time.time() - start_time
+    print(f"⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+    print(f"⚡ Samples per second: {len(all_interpolated_samples)/elapsed_time:.2f}")
+    print(f"{'='*80}\n")
+    
+    return all_interpolated_samples
+
+
 if __name__ == '__main__':
     ########################################################
     # CONFIGURATION: Choose mode
@@ -287,7 +432,7 @@ if __name__ == '__main__':
     ########################################################
     # Run single inference
     ########################################################
-    run_inference(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=1, steps=32)
+    # run_inference(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=1, steps=32)
 
     ########################################################
     # Run greedy inference
@@ -404,49 +549,63 @@ if __name__ == '__main__':
     #     print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
 
     ########################################################
-    # Run inference with scheduler (CHARLES)
+    # Generate interpolations from greedy samples
     ########################################################
-    # Configuration
-    SCHEDULER_TYPE = 'neural'  # 'xgboost' or 'neural'
-    
-    # Auto-enable custom model if using neural scheduler
-    if SCHEDULER_TYPE == 'neural' and not USE_CUSTOM_MODEL:
-        print("\n" + "="*80)
-        print("⚠️  CRITICAL: Neural scheduler requires custom model!")
-        print("="*80)
-        print("The HuggingFace model doesn't have scheduler head modifications.")
-        print("Please set USE_CUSTOM_MODEL = True at the top of the script")
-        print("and re-run to load the model with scheduler_head enabled.")
-        print("="*80 + "\n")
-        raise ValueError("USE_CUSTOM_MODEL must be True when SCHEDULER_TYPE='neural'")
-    
-    SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model (only for 'xgboost')
-    USE_REGRESSION = True  # True for regression, False for classification (only for 'xgboost')
-    GEN_LENGTH = 32
-    STEPS = 32  # Not used in dynamic version, kept for compatibility
-    TEMPERATURE = 0.
-    CFG_SCALE = 0.
-    REMASKING = 'low_confidence'
-    BLOCK_SIZE_OFFSET = 0  # Conservative offset: subtract from predicted block_size (0=no offset)
-    MAX_BLOCK_SIZE = 10  # Maximum allowed block size (should match training data cap)
-    
-    # Run scheduler inference
-    results_df = run_inference_with_scheduler(
+    interpolated_samples = generate_interpolations(
         model=model,
         tokenizer=tokenizer,
         device=device,
-        scheduler_path=SCHEDULER_PATH,
-        questions_csv_path="./data/gsm8k_correct.csv",
+        model_args=model_args,
+        greedy_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
+        output_csv_path="./data/sft_training_samples_interpolated.csv",
         num_questions=NUM_QUESTIONS,
-        gen_length=GEN_LENGTH,
-        steps=STEPS,
-        temperature=TEMPERATURE,
-        cfg_scale=CFG_SCALE,
-        remasking=REMASKING,
-        block_size_offset=BLOCK_SIZE_OFFSET,
-        max_block_size=MAX_BLOCK_SIZE,
-        use_regression=USE_REGRESSION,
-        instruction=instruction,
-        output_path="./output/charles_inference_results.csv",
-        scheduler_type=SCHEDULER_TYPE
+        instruction=None  # prompt already has instruction in the CSV
     )
+
+    ########################################################
+    # Run inference with scheduler (CHARLES)
+    ########################################################
+    # # Configuration
+    # SCHEDULER_TYPE = 'neural'  # 'xgboost' or 'neural'
+    
+    # # Auto-enable custom model if using neural scheduler
+    # if SCHEDULER_TYPE == 'neural' and not USE_CUSTOM_MODEL:
+    #     print("\n" + "="*80)
+    #     print("⚠️  CRITICAL: Neural scheduler requires custom model!")
+    #     print("="*80)
+    #     print("The HuggingFace model doesn't have scheduler head modifications.")
+    #     print("Please set USE_CUSTOM_MODEL = True at the top of the script")
+    #     print("and re-run to load the model with scheduler_head enabled.")
+    #     print("="*80 + "\n")
+    #     raise ValueError("USE_CUSTOM_MODEL must be True when SCHEDULER_TYPE='neural'")
+    
+    # SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model (only for 'xgboost')
+    # USE_REGRESSION = True  # True for regression, False for classification (only for 'xgboost')
+    # GEN_LENGTH = 32
+    # STEPS = 32  # Not used in dynamic version, kept for compatibility
+    # TEMPERATURE = 0.
+    # CFG_SCALE = 0.
+    # REMASKING = 'low_confidence'
+    # BLOCK_SIZE_OFFSET = 0  # Conservative offset: subtract from predicted block_size (0=no offset)
+    # MAX_BLOCK_SIZE = 10  # Maximum allowed block size (should match training data cap)
+    
+    # # Run scheduler inference
+    # results_df = run_inference_with_scheduler(
+    #     model=model,
+    #     tokenizer=tokenizer,
+    #     device=device,
+    #     scheduler_path=SCHEDULER_PATH,
+    #     questions_csv_path="./data/gsm8k_correct.csv",
+    #     num_questions=NUM_QUESTIONS,
+    #     gen_length=GEN_LENGTH,
+    #     steps=STEPS,
+    #     temperature=TEMPERATURE,
+    #     cfg_scale=CFG_SCALE,
+    #     remasking=REMASKING,
+    #     block_size_offset=BLOCK_SIZE_OFFSET,
+    #     max_block_size=MAX_BLOCK_SIZE,
+    #     use_regression=USE_REGRESSION,
+    #     instruction=instruction,
+    #     output_path="./output/charles_inference_results.csv",
+    #     scheduler_type=SCHEDULER_TYPE
+    # )
