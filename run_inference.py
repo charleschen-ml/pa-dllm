@@ -277,10 +277,15 @@ def generate_interpolations(
         
         # Generate samples for each interpolation
         for interp_idx, manual_setting in enumerate(interpolations, 1):
-            # Calculate curr_pos: sum of all block sizes (total tokens generated so far)
-            curr_pos = sum(manual_setting.values())
+            # Calculate curr_pos: the next block index to optimize (not token position!)
+            # If manual_setting = {0: 2, 1: 3}, we've fixed blocks 0-1 and will optimize block 2
+            curr_pos = max(manual_setting.keys()) + 1
             curr_pos_metadata = curr_pos  # Save for metadata before function call
-            print(f"   ⚙️  Interpolation {interp_idx}/{len(interpolations)}: {manual_setting} → curr_pos={curr_pos}")
+            
+            # Also calculate token_position for debugging
+            token_position = sum(manual_setting.values())
+            print(f"   ⚙️  Interpolation {interp_idx}/{len(interpolations)}: {manual_setting}")
+            print(f"      → curr_pos (block index)={curr_pos}, token_position={token_position}")
             
             # Call generate_one_sample with manual_settings and curr_pos
             # Note: We pass instruction=None because prompt already has instruction prepended
@@ -303,11 +308,11 @@ def generate_interpolations(
             sample_data['question_id'] = question_id
             sample_data['question'] = prompt
             sample_data['interpolation_idx'] = interp_idx
-            sample_data['curr_pos'] = curr_pos_metadata
-            # Override position field to match curr_pos (important for CSV output)
+            sample_data['curr_pos'] = curr_pos_metadata  # Block index being optimized
+            # Override position field to match token_position (important for CSV output)
             if sample_data['features'] and len(sample_data['features']) > 0:
                 sample_data['features'][0] = list(sample_data['features'][0])
-                sample_data['features'][0][2] = curr_pos_metadata  # position is index 2
+                sample_data['features'][0][2] = token_position  # position is index 2, should be token count
             
             all_interpolated_samples.append(sample_data)
             print(f"      ✅ Generated sample for curr_pos={curr_pos_metadata}")
@@ -442,22 +447,23 @@ if __name__ == '__main__':
     ########################################################
     # Generate one sample
     ########################################################
-    # print("🚀 Starting generate_one_sample...")
-    # start_time = time.time()
-    # manual_settings = {}
-    # training_sample = generate_one_sample(
-    #     model, tokenizer, device, prompt, model_args, 
-    #     gen_length=32, 
-    #     base_block_length=1, 
-    #     steps=32, 
-    #     curr_pos=0, 
-    #     correct_answer=correct_answer,
-    #     manual_settings=manual_settings,)
-    # print(f"training_sample=\n{training_sample}")
-    # end_time = time.time()
-    # elapsed_time = end_time - start_time
-    # print(f"\n⏱️  TIMING REPORT:")
-    # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+    print("🚀 Starting generate_one_sample...")
+    start_time = time.time()
+    manual_settings = {0:1}
+    curr_pos = max(manual_settings.keys()) + 1
+    training_sample = generate_one_sample(
+        model, tokenizer, device, prompt, model_args, 
+        gen_length=32, 
+        base_block_length=1, 
+        steps=32, 
+        curr_pos=curr_pos, # block index to optimize
+        correct_answer=correct_answer,
+        manual_settings=manual_settings,)
+    print(f"training_sample=\n{training_sample}")
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"\n⏱️  TIMING REPORT:")
+    print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
 
     ########################################################
     # Augment one sample
@@ -551,16 +557,16 @@ if __name__ == '__main__':
     ########################################################
     # Generate interpolations from greedy samples
     ########################################################
-    interpolated_samples = generate_interpolations(
-        model=model,
-        tokenizer=tokenizer,
-        device=device,
-        model_args=model_args,
-        greedy_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
-        output_csv_path="./data/sft_training_samples_interpolated.csv",
-        num_questions=NUM_QUESTIONS,
-        instruction=None  # prompt already has instruction in the CSV
-    )
+    # interpolated_samples = generate_interpolations(
+    #     model=model,
+    #     tokenizer=tokenizer,
+    #     device=device,
+    #     model_args=model_args,
+    #     greedy_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
+    #     output_csv_path="./data/sft_training_samples_interpolated.csv",
+    #     num_questions=NUM_QUESTIONS,
+    #     instruction=None  # prompt already has instruction in the CSV
+    # )
 
     ########################################################
     # Run inference with scheduler (CHARLES)
