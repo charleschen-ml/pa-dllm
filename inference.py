@@ -608,12 +608,13 @@ def run_greedy_inference(model, tokenizer, device, prompt, model_args, max_new_t
     return
 
 # Generate one sample for SFT dataset
-def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0, manual_settings=None, correct_answer=None, instruction=None):
+def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_tokens=32, do_sample=False, gen_length=32, base_block_length=2, steps=16, curr_pos=0, manual_settings=None, correct_answer=None, instruction=None, block_size_max=None):
     """Run a single prompt without reloading the model.
     Pass model_args.use_cache=False for LLaDA/MDM-style models.
     
     Args:
         prompt: Input prompt string (can be question only if instruction is provided)
+        block_size_max: Maximum block size to cap sweep values at (default: None = no cap)
         manual_settings: Dict of {block_position: block_size_value} for manual block size settings.
                         If None, starts with empty dict (all blocks use base_block_length).
         correct_answer: Expected correct answer for checking correctness (optional).
@@ -663,7 +664,10 @@ def generate_one_sample(model, tokenizer, device, prompt, model_args, max_new_to
     stored_ar_tokens = None  # Store AR context tokens from first call
     stored_additional_features = None  # Store additional confidence metrics from first call
     
-    for sweep_value in range(1, gen_length + 1):  # Try values 1 to gen_length
+    # Cap the sweep range at block_size_max if provided
+    max_sweep = gen_length if block_size_max is None else min(gen_length, block_size_max)
+    
+    for sweep_value in range(1, max_sweep + 1):  # Try values 1 to max_sweep
         current_settings = manual_settings.copy()
         current_settings[position] = sweep_value
         
@@ -1049,12 +1053,13 @@ def write_to_json_csv(training_samples, json_output_path="./data/sft_training_sa
     print(f"  📊 CSV:  {csv_output_path}")
 
 
-def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None, save_to_file=True, disable_tqdm=False):
+def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None, save_to_file=True, disable_tqdm=False, block_size_max=None):
     """
     Generate training samples by collecting confidence/entropy data at different curr_pos values,
     and optionally save them to JSON and CSV files.
     
     Args:
+        block_size_max: Maximum block size to cap sweep values at (default: None = no cap)
         model: The model to use for generation
         tokenizer: Tokenizer for the model
         device: Device to run on
@@ -1113,6 +1118,7 @@ def augment_one_sample(model, tokenizer, device, prompt, model_args, gen_length=
             curr_pos=curr_pos,
             manual_settings=manual_settings,
             correct_answer=correct_answer,
+            block_size_max=block_size_max,
         )
         if sample:
             current_block_size = sample.get('block_size', 1)
@@ -1179,7 +1185,7 @@ def augment_one_sample_dispatch(use_greedy=False, **kwargs):
         return augment_one_sample(**kwargs)
 
 
-def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None, save_to_file=True, disable_tqdm=False):
+def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_length=32, base_block_length=2, steps=16, correct_answer=None, break_after_answer_found=True, instruction=None, save_to_file=True, disable_tqdm=False, block_size_max=None):
     """
     Greedy version: Use optimal block sizes from previous positions instead of AR.
     
@@ -1260,6 +1266,7 @@ def augment_one_sample_greedy(model, tokenizer, device, prompt, model_args, gen_
             curr_pos=step_num,  # Pass step_num so manual_settings is keyed correctly
             manual_settings=manual_settings,  # Let generate_one_sample update it directly
             correct_answer=correct_answer,
+            block_size_max=block_size_max,
         )
         
         if sample:
@@ -1612,7 +1619,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
                            gen_length=32, base_block_length=1, steps=32, break_after_answer_found=True,
                            output_json_path="./data/sft_training_samples_multi_greedy.json",
                            output_csv_path="./data/sft_training_samples_multi_greedy.csv",
-                           instruction=None, use_greedy=False):
+                           instruction=None, use_greedy=False, block_size_max=None):
     """
     Process multiple questions from a CSV file and generate training samples for each.
     
@@ -1631,6 +1638,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
         output_csv_path: Output CSV file path
         instruction: Instruction to prepend to each question (default: None)
         use_greedy: If True, use greedy mode; if False, use AR mode (default: False)
+        block_size_max: Maximum block size to cap sweep values at (default: None = no cap)
     
     Returns:
         List of all training samples across all questions
@@ -1679,7 +1687,8 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
             steps=steps,
             correct_answer=correct_answer,
             break_after_answer_found=break_after_answer_found,
-            save_to_file=False  # Don't save intermediate files, will save all at the end
+            save_to_file=False,  # Don't save intermediate files, will save all at the end
+            block_size_max=block_size_max,
         )
         
         # Add question metadata to each sample
@@ -1703,7 +1712,7 @@ def augment_multiple_samples(model, tokenizer, device, model_args, csv_path, num
 
 
 def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_length, steps, 
-                     break_after_answer_found, instruction, result_queue, use_greedy=False):
+                     break_after_answer_found, instruction, result_queue, use_greedy=False, block_size_max=None):
     """Worker function that processes questions on a specific GPU (module-level for pickling)"""
     import sys
     import os
@@ -1785,7 +1794,8 @@ def _parallel_worker(gpu_id, df_subset, model_args, gen_length, base_block_lengt
                 correct_answer=correct_answer,
                 break_after_answer_found=break_after_answer_found,
                 save_to_file=False,
-                disable_tqdm=True  # CRITICAL: Disable tqdm to avoid cross-process terminal locks
+                disable_tqdm=True,  # CRITICAL: Disable tqdm to avoid cross-process terminal locks
+                block_size_max=block_size_max,
             )
             
             # Add question metadata
@@ -1813,7 +1823,7 @@ def augment_multiple_samples_parallel(
     gen_length=32, base_block_length=1, steps=32, break_after_answer_found=True,
     output_json_path="./data/sft_training_samples_multi_greedy.json",
     output_csv_path="./data/sft_training_samples_multi_greedy.csv",
-    instruction=None, num_gpus=2, use_greedy=False
+    instruction=None, num_gpus=2, use_greedy=False, block_size_max=None
 ):
     """
     Parallel version: process multiple questions across multiple GPUs.
@@ -1831,6 +1841,7 @@ def augment_multiple_samples_parallel(
         instruction: Instruction to prepend to each question
         num_gpus: Number of GPUs to use (default: 2)
         use_greedy: If True, use greedy mode; if False, use AR mode (default: False)
+        block_size_max: Maximum block size to cap sweep values at (default: None = no cap)
     
     Returns:
         List of all training samples across all questions
@@ -1875,7 +1886,7 @@ def augment_multiple_samples_parallel(
         p = mp.Process(
             target=_parallel_worker,
             args=(gpu_id, df_subset, model_args, gen_length, base_block_length, 
-                  steps, break_after_answer_found, instruction, result_queue, use_greedy)
+                  steps, break_after_answer_found, instruction, result_queue, use_greedy, block_size_max)
         )
         p.start()
         processes.append(p)

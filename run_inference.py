@@ -200,7 +200,8 @@ def generate_interpolations(
     greedy_csv_path,
     output_csv_path,
     num_questions=None,
-    instruction=None
+    instruction=None,
+    block_size_max=None
 ):
     """
     Generate interpolated training samples from greedy baseline samples.
@@ -301,7 +302,8 @@ def generate_interpolations(
                 curr_pos=curr_pos,  # Position to optimize (sum of block sizes)
                 manual_settings=manual_setting,  # Pass dict directly, not wrapped in list
                 correct_answer=correct_answer,  # Pass correct answer for optimization
-                instruction=None  # prompt already has instruction
+                instruction=None,  # prompt already has instruction
+                block_size_max=block_size_max
             )
             
             # Add metadata (use saved curr_pos_metadata to ensure correct value)
@@ -345,12 +347,13 @@ if __name__ == '__main__':
     ########################################################
     # CONFIGURATION: Choose mode
     ########################################################
-    USE_CUSTOM_MODEL = True  # True: use custom local modeling_llada.py, False: use HF model
+    USE_CUSTOM_MODEL = False  # True: use custom local modeling_llada.py, False: use HF model
                                # NOTE: Will be automatically set to True if SCHEDULER_TYPE='neural'
     USE_GREEDY = True  # True: use greedy mode when generating training samples, False: use AR mode
     USE_PARALLEL = False  # Set to False for sequential mode (needed for batch inference)
     NUM_GPUS = 4  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = 1  # Number of questions to process (None = process all questions in CSV)
+    NUM_QUESTIONS = 10  # Number of questions to process (None = process all questions in CSV)
+    BLOCK_SIZE_MAX = 2  # Maximum block size to cap sweep values at (None = no cap)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -447,23 +450,23 @@ if __name__ == '__main__':
     ########################################################
     # Generate one sample
     ########################################################
-    print("🚀 Starting generate_one_sample...")
-    start_time = time.time()
-    manual_settings = {0:1}
-    curr_pos = max(manual_settings.keys()) + 1
-    training_sample = generate_one_sample(
-        model, tokenizer, device, prompt, model_args, 
-        gen_length=32, 
-        base_block_length=1, 
-        steps=32, 
-        curr_pos=curr_pos, # block index to optimize
-        correct_answer=correct_answer,
-        manual_settings=manual_settings,)
-    print(f"training_sample=\n{training_sample}")
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"\n⏱️  TIMING REPORT:")
-    print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+    # print("🚀 Starting generate_one_sample...")
+    # start_time = time.time()
+    # manual_settings = {0:1}
+    # curr_pos = max(manual_settings.keys()) + 1
+    # training_sample = generate_one_sample(
+    #     model, tokenizer, device, prompt, model_args, 
+    #     gen_length=32, 
+    #     base_block_length=1, 
+    #     steps=32, 
+    #     curr_pos=curr_pos, # block index to optimize
+    #     correct_answer=correct_answer,
+    #     manual_settings=manual_settings,)
+    # print(f"training_sample=\n{training_sample}")
+    # end_time = time.time()
+    # elapsed_time = end_time - start_time
+    # print(f"\n⏱️  TIMING REPORT:")
+    # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
 
     ########################################################
     # Augment one sample
@@ -483,7 +486,8 @@ if __name__ == '__main__':
     #     base_block_length=1,
     #     steps=32,
     #     correct_answer=correct_answer,
-    #     break_after_answer_found=True  # Set to False to continue augmentation after answer found
+    #     break_after_answer_found=True,  # Set to False to continue augmentation after answer found
+    #     block_size_max=BLOCK_SIZE_MAX
     # )
     
     # end_time = time.time()
@@ -494,65 +498,67 @@ if __name__ == '__main__':
     ########################################################
     # Augment multiple samples: Sequential or Parallel
     ########################################################
-    # start_time = time.time()
+    start_time = time.time()
     
-    # # Determine how many questions to process
-    # csv_path = "./data/gsm8k_correct.csv"
-    # df_temp = pd.read_csv(csv_path)
-    # total_questions = len(df_temp)
-    # print(f"📊 Found {total_questions} questions in {csv_path}")
+    # Determine how many questions to process
+    csv_path = "./data/gsm8k_correct.csv"
+    df_temp = pd.read_csv(csv_path)
+    total_questions = len(df_temp)
+    print(f"📊 Found {total_questions} questions in {csv_path}")
     
-    # # Use NUM_QUESTIONS if specified, otherwise process all
-    # questions_to_process = NUM_QUESTIONS if NUM_QUESTIONS is not None else total_questions
-    # print(f"🎯 Processing {questions_to_process} questions")
+    # Use NUM_QUESTIONS if specified, otherwise process all
+    questions_to_process = NUM_QUESTIONS if NUM_QUESTIONS is not None else total_questions
+    print(f"🎯 Processing {questions_to_process} questions")
     
-    # mode_str = "GREEDY" if USE_GREEDY else "AR"
-    # if USE_PARALLEL:
-    #     print(f"🚀 Starting PARALLEL mode with {NUM_GPUS} GPUs ({mode_str} mode)...")
-    #     from inference import augment_multiple_samples_parallel
+    mode_str = "GREEDY" if USE_GREEDY else "AR"
+    if USE_PARALLEL:
+        print(f"🚀 Starting PARALLEL mode with {NUM_GPUS} GPUs ({mode_str} mode)...")
+        from inference import augment_multiple_samples_parallel
         
-    #     all_training_samples = augment_multiple_samples_parallel(
-    #         model_args=model_args,
-    #         csv_path=csv_path,
-    #         num_questions=questions_to_process,
-    #         gen_length=32,
-    #         base_block_length=1,
-    #         steps=32,
-    #         break_after_answer_found=True,
-    #         output_json_path="./data/sft_training_samples_multi_greedy_parallel.json",
-    #         output_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
-    #         instruction=instruction,
-    #         num_gpus=NUM_GPUS,
-    #         use_greedy=USE_GREEDY
-    #     )
-    # else:
-    #     print(f"🚀 Starting SEQUENTIAL mode ({mode_str} mode)...")
-    #     all_training_samples = augment_multiple_samples(
-    #         model=model,
-    #         tokenizer=tokenizer,
-    #         device=device,
-    #         model_args=model_args,
-    #         csv_path=csv_path,
-    #         num_questions=questions_to_process,
-    #         gen_length=32,
-    #         base_block_length=1,
-    #         steps=32,
-    #         break_after_answer_found=True,
-    #         output_json_path="./data/sft_training_samples_multi_greedy.json",
-    #         output_csv_path="./data/sft_training_samples_multi_greedy.csv",
-    #         instruction=instruction,
-    #         use_greedy=USE_GREEDY
-    #     )
+        all_training_samples = augment_multiple_samples_parallel(
+            model_args=model_args,
+            csv_path=csv_path,
+            num_questions=questions_to_process,
+            gen_length=32,
+            base_block_length=1,
+            steps=32,
+            break_after_answer_found=True,
+            output_json_path="./data/sft_training_samples_multi_greedy_parallel.json",
+            output_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
+            instruction=instruction,
+            num_gpus=NUM_GPUS,
+            use_greedy=USE_GREEDY,
+            block_size_max=BLOCK_SIZE_MAX
+        )
+    else:
+        print(f"🚀 Starting SEQUENTIAL mode ({mode_str} mode)...")
+        all_training_samples = augment_multiple_samples(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            model_args=model_args,
+            csv_path=csv_path,
+            num_questions=questions_to_process,
+            gen_length=32,
+            base_block_length=1,
+            steps=32,
+            break_after_answer_found=True,
+            output_json_path="./data/sft_training_samples_multi_greedy.json",
+            output_csv_path="./data/sft_training_samples_multi_greedy.csv",
+            instruction=instruction,
+            use_greedy=USE_GREEDY,
+            block_size_max=BLOCK_SIZE_MAX
+        )
     
-    # end_time = time.time()
-    # elapsed_time = end_time - start_time
-    # print(f"\n⏱️  TIMING REPORT:")
-    # print(f"  📊 Total samples generated: {len(all_training_samples)}")
-    # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
-    # print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
-    # if USE_PARALLEL:
-    #     print(f"  🚀 Used {NUM_GPUS} GPUs in parallel!")
-    #     print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"\n⏱️  TIMING REPORT:")
+    print(f"  📊 Total samples generated: {len(all_training_samples)}")
+    print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+    print(f"  ⚡ Time per sample: {elapsed_time/len(all_training_samples):.2f} seconds")
+    if USE_PARALLEL:
+        print(f"  🚀 Used {NUM_GPUS} GPUs in parallel!")
+        print(f"  🎯 Processing rate: {len(all_training_samples)/elapsed_time:.1f} samples/second")
 
     ########################################################
     # Generate interpolations from greedy samples
@@ -565,7 +571,8 @@ if __name__ == '__main__':
     #     greedy_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
     #     output_csv_path="./data/sft_training_samples_interpolated.csv",
     #     num_questions=NUM_QUESTIONS,
-    #     instruction=None  # prompt already has instruction in the CSV
+    #     instruction=None,  # prompt already has instruction in the CSV
+    #     block_size_max=BLOCK_SIZE_MAX
     # )
 
     ########################################################
