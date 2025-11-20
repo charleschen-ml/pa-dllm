@@ -1,16 +1,18 @@
 """
-Train XGBoost scheduler to predict optimal block_size_rel for fast inference.
+Train XGBoost scheduler to predict optimal block_size for fast inference.
 
-This script trains a classifier to predict which fraction of remaining tokens
-can be decoded together, eliminating the need for expensive greedy sweeps.
+This script trains a classifier to predict how many tokens (1 or 2)
+should be decoded together, eliminating the need for expensive greedy sweeps.
 
-Classes (power-of-2 bins):
-  0: 1/32 (3.125% of remaining tokens)
-  1: 1/16 (6.25%)
-  2: 1/8  (12.5%)
-  3: 1/4  (25%)
-  4: 1/2  (50%)
-  5: 1    (100% - all remaining tokens)
+Binary Classification Mode (default):
+  Class 0: 1 token
+  Class 1: 2 tokens
+
+Multi-class Mode (set NUM_CLASSES > 2):
+  Class 0: 1 token
+  Class 1: 2 tokens
+  Class 2: 3 tokens
+  ... (up to NUM_CLASSES)
 """
 
 import pandas as pd
@@ -23,47 +25,50 @@ import seaborn as sns
 import os
 
 
-def rel_to_class(block_size_rel):
+def blocksize_to_class(block_size, num_classes):
     """
-    Convert block_size_rel (0-1) to nearest power-of-2 class.
+    Convert block_size (1, 2, 3, ...) to class index (0, 1, 2, ...).
     
     Args:
-        block_size_rel: Float in [0, 1] representing fraction of remaining tokens
+        block_size: Integer representing number of tokens
+        num_classes: Total number of classes (e.g., 2 for binary, 5 for 1-5 tokens)
         
     Returns:
-        Class index (0-5)
+        Class index (0-indexed, so block_size=1 → class=0)
     """
-    bins = [1/32, 1/16, 1/8, 1/4, 1/2, 1.0]
-    class_idx = np.argmin([abs(block_size_rel - b) for b in bins])
-    return class_idx
+    # Clip to valid range
+    block_size = int(block_size)
+    block_size = max(1, min(num_classes, block_size))
+    return block_size - 1  # Convert to 0-indexed
 
 
-def class_to_rel(class_idx):
+def class_to_blocksize(class_idx):
     """
-    Convert class index back to block_size_rel.
+    Convert class index back to block_size.
     
     Args:
-        class_idx: Integer in [0, 5]
+        class_idx: Integer class index (0, 1, 2, ...)
         
     Returns:
-        block_size_rel: Float representing fraction
+        block_size: Integer number of tokens (1, 2, 3, ...)
     """
-    bins = [1/32, 1/16, 1/8, 1/4, 1/2, 1.0]
-    return bins[class_idx]
+    return int(class_idx) + 1  # Convert from 0-indexed to 1-indexed
 
 
-def plot_confusion_matrix(y_true, y_pred, save_path="./output/scheduler_confusion_matrix.png"):
+def plot_confusion_matrix(y_true, y_pred, num_classes, save_path="./output/scheduler_confusion_matrix.png"):
     """Plot confusion matrix for classification results."""
     cm = confusion_matrix(y_true, y_pred)
     
-    plt.figure(figsize=(10, 8))
+    # Adjust figure size based on number of classes
+    fig_size = (8, 6) if num_classes <= 5 else (10, 8)
+    plt.figure(figsize=fig_size)
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
     plt.title('Scheduler Confusion Matrix')
     plt.ylabel('True Class')
     plt.xlabel('Predicted Class')
     
-    # Add class labels
-    class_labels = ['1/32', '1/16', '1/8', '1/4', '1/2', '1']
+    # Generate class labels based on number of classes
+    class_labels = [f'{i} tok' + ('s' if i > 1 else '') for i in range(1, num_classes + 1)]
     plt.gca().set_xticklabels(class_labels)
     plt.gca().set_yticklabels(class_labels)
     
@@ -98,8 +103,9 @@ def main(use_wandb=True):
     # ========================================
     # CONFIGURATION
     # ========================================
-    USE_REGRESSION = True  # Set to True for regression, False for classification
-    FILTER_BY_ANSWER_FOUND = True  # Set to True to filter out answer_found==True samples
+    USE_REGRESSION = False  # Set to True for regression, False for classification
+    NUM_CLASSES = 2  # Number of token classes (2 for binary: 1 vs 2 tokens, 5 for 1-5 tokens, etc.)
+    FILTER_BY_ANSWER_FOUND = False  # Set to True to filter out answer_found==True samples
     
     # ========================================
     # HYPERPARAMETERS - TUNE THESE!
@@ -130,10 +136,15 @@ def main(use_wandb=True):
         HYPERPARAMS['eval_metric'] = 'rmse'
         print(f"🎯 MODE: Regression (predicting continuous block_size_rel)")
     else:
-        HYPERPARAMS['objective'] = 'multi:softprob'
-        HYPERPARAMS['num_class'] = 6
-        HYPERPARAMS['eval_metric'] = 'mlogloss'
-        print(f"🎯 MODE: Classification (predicting power-of-2 classes)")
+        if NUM_CLASSES == 2:
+            HYPERPARAMS['objective'] = 'binary:logistic'
+            HYPERPARAMS['eval_metric'] = 'logloss'
+            print(f"🎯 MODE: Binary Classification (1 vs 2 tokens)")
+        else:
+            HYPERPARAMS['objective'] = 'multi:softprob'
+            HYPERPARAMS['num_class'] = NUM_CLASSES
+            HYPERPARAMS['eval_metric'] = 'mlogloss'
+            print(f"🎯 MODE: Multi-class Classification (1-{NUM_CLASSES} tokens)")
     
     # Data configuration
     DATA_PATH = "./data/sft_training_samples_multi_greedy_parallel.csv"
@@ -303,16 +314,17 @@ def main(use_wandb=True):
         print(f"  Min:    {y.min():.4f}")
         print(f"  Max:    {y.max():.4f}")
     else:
-        print("\n🎯 Converting block_size_rel to power-of-2 classes...")
-        y = df['block_size_rel'].apply(rel_to_class)
+        print(f"\n🎯 Converting block_size to {NUM_CLASSES}-class classification...")
+        y = df['block_size'].apply(lambda bs: blocksize_to_class(bs, NUM_CLASSES))
         
         # Class distribution
         print("\n📊 Class distribution:")
-        class_labels = ['1/32', '1/16', '1/8', '1/4', '1/2', '1']
-        for class_idx in range(6):
+        for class_idx in range(NUM_CLASSES):
+            block_size = class_to_blocksize(class_idx)
             count = (y == class_idx).sum()
             pct = 100 * count / len(y)
-            print(f"  Class {class_idx} ({class_labels[class_idx]:>4}): {count:5d} samples ({pct:5.1f}%)")
+            token_str = f"{block_size} token" + ("s" if block_size > 1 else "")
+            print(f"  Class {class_idx} ({token_str:>8}): {count:5d} samples ({pct:5.1f}%)")
     
     # Train/val/test split by question_id to prevent leakage
     train_pct = int((1 - TEST_SIZE - VAL_SIZE) * 100)
@@ -395,11 +407,12 @@ def main(use_wandb=True):
         sample_weights = compute_sample_weight('balanced', y_train)
         
         # Show weight distribution
-        class_labels = ['1/32', '1/16', '1/8', '1/4', '1/2', '1']
-        for class_idx in range(6):
+        for class_idx in range(NUM_CLASSES):
             if (y_train == class_idx).sum() > 0:
+                block_size = class_to_blocksize(class_idx)
+                token_str = f"{block_size} token" + ("s" if block_size > 1 else "")
                 avg_weight = sample_weights[y_train == class_idx].mean()
-                print(f"  Class {class_idx} ({class_labels[class_idx]:>4}): avg weight = {avg_weight:.2f}")
+                print(f"  Class {class_idx} ({token_str:>8}): avg weight = {avg_weight:.2f}")
     else:
         sample_weights = None
     
@@ -479,14 +492,31 @@ def main(use_wandb=True):
         print(f"Overfitting (train-val RMSE diff): {train_rmse - val_rmse:+.4f}")
     else:
         # Classification metrics
-        # Get predictions (softprob returns probabilities, take argmax for class labels)
-        y_train_pred_proba = model.predict_proba(X_train)
-        y_val_pred_proba = model.predict_proba(X_val)
-        y_test_pred_proba = model.predict_proba(X_test)
-        
-        y_train_pred = np.argmax(y_train_pred_proba, axis=1)
-        y_val_pred = np.argmax(y_val_pred_proba, axis=1)
-        y_test_pred = np.argmax(y_test_pred_proba, axis=1)
+        # Get predictions
+        if NUM_CLASSES == 2:
+            # Binary classification: predict_proba returns shape (n, 2) or just (n,) in some versions
+            y_train_pred_proba = model.predict_proba(X_train)
+            y_val_pred_proba = model.predict_proba(X_val)
+            y_test_pred_proba = model.predict_proba(X_test)
+            
+            # Ensure 2D shape (n, 2) for consistency
+            if y_train_pred_proba.ndim == 1:
+                y_train_pred_proba = np.column_stack([1 - y_train_pred_proba, y_train_pred_proba])
+                y_val_pred_proba = np.column_stack([1 - y_val_pred_proba, y_val_pred_proba])
+                y_test_pred_proba = np.column_stack([1 - y_test_pred_proba, y_test_pred_proba])
+            
+            y_train_pred = (y_train_pred_proba[:, 1] > 0.5).astype(int)
+            y_val_pred = (y_val_pred_proba[:, 1] > 0.5).astype(int)
+            y_test_pred = (y_test_pred_proba[:, 1] > 0.5).astype(int)
+        else:
+            # Multi-class: softprob returns probabilities, take argmax for class labels
+            y_train_pred_proba = model.predict_proba(X_train)
+            y_val_pred_proba = model.predict_proba(X_val)
+            y_test_pred_proba = model.predict_proba(X_test)
+            
+            y_train_pred = np.argmax(y_train_pred_proba, axis=1)
+            y_val_pred = np.argmax(y_val_pred_proba, axis=1)
+            y_test_pred = np.argmax(y_test_pred_proba, axis=1)
         
         train_acc = accuracy_score(y_train, y_train_pred)
         val_acc = accuracy_score(y_val, y_val_pred)
@@ -530,7 +560,8 @@ def main(use_wandb=True):
     # Classification-specific reports
     if not USE_REGRESSION:
         print("\n📊 Detailed Classification Report (Test Set):")
-        class_labels = ['1/32', '1/16', '1/8', '1/4', '1/2', '1']
+        # Generate class labels
+        class_labels = [f'{i} tok' + ('s' if i > 1 else '') for i in range(1, NUM_CLASSES + 1)]
         report = classification_report(
             y_test, y_test_pred,
             target_names=class_labels,
@@ -554,7 +585,7 @@ def main(use_wandb=True):
                     })
         
         # Plot confusion matrix
-        plot_confusion_matrix(y_test, y_test_pred)
+        plot_confusion_matrix(y_test, y_test_pred, NUM_CLASSES)
     
     # Plot feature importance
     plot_feature_importance(model, feature_cols)
@@ -592,18 +623,23 @@ def main(use_wandb=True):
             print(f"   Pred: block_size_rel = {pred_val:.4f} (error: {error:.4f})")
         else:
             pred_proba = model.predict_proba(features)[0]
-            pred_class = np.argmax(pred_proba)
+            if NUM_CLASSES == 2:
+                # Binary: ensure we have 2 probabilities
+                if pred_proba.ndim == 0 or len(pred_proba) == 1:
+                    pred_proba = np.array([1 - pred_proba, pred_proba])
+                pred_class = (pred_proba[1] > 0.5).astype(int)
+            else:
+                pred_class = np.argmax(pred_proba)
             
-            true_rel = class_to_rel(true_val)
-            pred_rel = class_to_rel(pred_class)
+            true_blocksize = class_to_blocksize(true_val)
+            pred_blocksize = class_to_blocksize(pred_class)
             
             match = "✅" if true_val == pred_class else "❌"
             pred_confidence = pred_proba[pred_class]
-            class_labels = ['1/32', '1/16', '1/8', '1/4', '1/2', '1']
             
             print(f"{match} Sample {i+1}:")
-            print(f"   True: class {true_val} ({class_labels[true_val]}) = {true_rel:.4f}")
-            print(f"   Pred: class {pred_class} ({class_labels[pred_class]}) = {pred_rel:.4f} (confidence: {pred_confidence:.2%})")
+            print(f"   True: class {true_val} ({true_blocksize} token{'s' if true_blocksize > 1 else ''})")
+            print(f"   Pred: class {pred_class} ({pred_blocksize} token{'s' if pred_blocksize > 1 else ''}) (confidence: {pred_confidence:.2%})")
         
         print(f"   Features: conf_0={features['conf_0'].values[0]:.3f}, "
               f"shannon_entropy_0={features['shannon_entropy_0'].values[0]:.3f}, "
@@ -643,14 +679,17 @@ def main(use_wandb=True):
     print("# At each position during inference:")
     if USE_REGRESSION:
         print("predicted_rel = scheduler.predict([features])[0]  # Direct prediction")
+        print("remaining_tokens = max_length - curr_pos")
+        print("predicted_block_size = max(1, int(predicted_rel * remaining_tokens))")
     else:
-        print("class_idx = scheduler.predict([features])[0]")
-        print("")
-        print("# Convert class to block_size")
-        print("bins = [1/32, 1/16, 1/8, 1/4, 1/2, 1.0]")
-        print("predicted_rel = bins[class_idx]")
-    print("remaining_tokens = max_length - curr_pos")
-    print("predicted_block_size = max(1, int(predicted_rel * remaining_tokens))")
+        if NUM_CLASSES == 2:
+            print("# Binary classification:")
+            print("prob_2_tokens = scheduler.predict_proba([features])[0, 1]")
+            print("predicted_block_size = 2 if prob_2_tokens > 0.5 else 1")
+        else:
+            print(f"# Multi-class classification (1-{NUM_CLASSES} tokens):")
+            print("class_idx = scheduler.predict([features])[0]")
+            print("predicted_block_size = class_idx + 1  # Convert from 0-indexed to actual token count")
     print("```")
     print("=" * 80)
     
