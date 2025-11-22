@@ -205,6 +205,11 @@ if __name__ == '__main__':
     BLOCK_SIZE_MAX = 2  # Maximum block size to cap sweep values at (None = no cap)
     EVALUATION_SPLIT = 'test'  # Which split to evaluate on: None, 'train', 'val', 'test'
                              # Set to 'train'/'val'/'test' to run inference only on that split
+    BASELINE_STRATEGY = 'random_50_50'  # Baseline strategy for testing: None, 'always_1', 'always_2', 'random_50_50'
+                              # None: Use XGBoost scheduler (normal mode)
+                              # 'always_1': Always predict block_size=1 (conservative, ~100% acc, 1.0x speedup)
+                              # 'always_2': Always predict block_size=2 (aggressive, upper bound speedup)
+                              # 'random_50_50': Random 50/50 between 1 and 2 (deterministic, untrained baseline)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -473,5 +478,6 @@ if __name__ == '__main__':
         instruction=instruction,
         output_path=f"./output/charles_inference_results{output_suffix}.csv",
         scheduler_type=SCHEDULER_TYPE,
-        evaluation_split=EVALUATION_SPLIT
+        evaluation_split=EVALUATION_SPLIT,
+        baseline_strategy=BASELINE_STRATEGY
     )

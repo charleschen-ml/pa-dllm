@@ -132,7 +132,8 @@ def predict_block_size_xgboost(
     block_size_offset=0,
     max_block_size=10,
     block_length=1,
-    verbose=True
+    verbose=True,
+    baseline_strategy=None
 ):
     """
     Predict block size using XGBoost scheduler with extracted features.
@@ -155,24 +156,29 @@ def predict_block_size_xgboost(
         block_size: Final predicted block size (int)
     """
     
-    if scheduler is not None:
-        # Extract features from logits
+    if scheduler is not None or baseline_strategy is not None:
+        # Extract features from logits (or use baseline strategy)
         from inference import predict_block_size
         
-        (initial_confidence, initial_entropy, initial_shannon_entropy, 
-         additional_features, ar_context_tokens) = extract_features(
-            logits=logits,
-            x=x,
-            gen_start=gen_start,
-            gen_length=gen_length,
-            tokenizer=tokenizer,
-            verbose=False,
-            curr_pos=curr_pos
-        )
-        
-        position_relative = round(curr_pos / gen_length, 4)
-        features = additional_features.get(curr_pos, {})
-        features['position_relative'] = position_relative
+        # Skip expensive feature extraction if using baseline strategy
+        if baseline_strategy is None:
+            (initial_confidence, initial_entropy, initial_shannon_entropy, 
+             additional_features, ar_context_tokens) = extract_features(
+                logits=logits,
+                x=x,
+                gen_start=gen_start,
+                gen_length=gen_length,
+                tokenizer=tokenizer,
+                verbose=False,
+                curr_pos=curr_pos
+            )
+            
+            position_relative = round(curr_pos / gen_length, 4)
+            features = additional_features.get(curr_pos, {})
+            features['position_relative'] = position_relative
+        else:
+            # Baseline mode: no features needed
+            features = {}
         
         # Calculate remaining tokens for accurate prediction
         remaining_tokens = gen_length - curr_pos
@@ -183,7 +189,8 @@ def predict_block_size_xgboost(
             features=features,
             gen_length=gen_length,
             use_regression=use_regression,
-            remaining_length=remaining_tokens
+            remaining_length=remaining_tokens,
+            baseline_strategy=baseline_strategy
         )
         block_size_raw = block_size_rel * remaining_tokens
         block_size = int(round(block_size_raw))
@@ -199,7 +206,9 @@ def predict_block_size_xgboost(
         # Print prediction details
         if verbose:
             print(f"📊 PREDICTION:")
-            print(f"   block_size_rel (XGBoost output) = {block_size_rel:.4f}")
+            if baseline_strategy:
+                print(f"   baseline_strategy               = {baseline_strategy}")
+            print(f"   block_size_rel (predicted)      = {block_size_rel:.4f}")
             print(f"   remaining_tokens                = {remaining_tokens}")
             print(f"   block_size_raw                  = {block_size_rel:.4f} × {remaining_tokens} = {block_size_raw:.2f}")
             print(f"   block_size (rounded)            = {block_size_before_offset}")
@@ -391,7 +400,7 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
 def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_length=128, block_length=128, 
                      temperature=0., cfg_scale=0., remasking='low_confidence', mask_id=126336, 
                      expected_answer=None, use_regression=True, block_size_offset=0, max_block_size=10,
-                     scheduler_type='xgboost'):
+                     scheduler_type='xgboost', baseline_strategy=None):
     '''
     Dynamic block size generation using scheduler (XGBoost or Neural Scheduler Head).
     
@@ -415,6 +424,7 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         scheduler_type: Type of scheduler to use. 'xgboost' or 'neural' (default: 'xgboost').
                         'xgboost': Uses XGBoost model with extracted features
                         'neural': Uses trained scheduler head in the model
+        baseline_strategy: Baseline mode for testing. None (use scheduler), 'always_1', 'always_2', 'random_50_50' (default: None).
     '''
 
     # Create x = prompt + completion 
@@ -505,7 +515,8 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
                 block_size_offset=block_size_offset,
                 max_block_size=max_block_size,
                 block_length=block_length,
-                verbose=True
+                verbose=True,
+                baseline_strategy=baseline_strategy
             )
         
         else:

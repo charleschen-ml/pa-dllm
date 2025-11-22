@@ -2137,7 +2137,7 @@ def load_scheduler(model_path, use_regression=True):
     return scheduler
 
 
-def predict_block_size(scheduler, features, gen_length, use_regression=True, remaining_length=None):
+def predict_block_size(scheduler, features, gen_length, use_regression=True, remaining_length=None, baseline_strategy=None):
     """
     Predict relative block size for current position using XGBoost scheduler.
     
@@ -2147,12 +2147,45 @@ def predict_block_size(scheduler, features, gen_length, use_regression=True, rem
         gen_length: Total generation length (for regression mode)
         use_regression: If True, scheduler outputs continuous value; else class index
         remaining_length: Remaining tokens to generate (for classification mode)
+        baseline_strategy: Baseline mode for testing. None (use scheduler), 'always_1', 'always_2', 'random_50_50'
     
     Returns:
         block_size_rel (float): Predicted relative block size (0.0 to 1.0)
     """
     import numpy as np
     
+    # Handle baseline strategies (for testing)
+    if baseline_strategy == 'always_1':
+        # Always predict block_size=1 (conservative baseline)
+        divisor = remaining_length if remaining_length is not None else gen_length
+        if divisor <= 0:
+            divisor = gen_length
+        return 1.0 / divisor
+    elif baseline_strategy == 'always_2':
+        # Always predict block_size=2 (aggressive baseline)
+        divisor = remaining_length if remaining_length is not None else gen_length
+        if divisor <= 0:
+            divisor = gen_length
+        return 2.0 / divisor
+    elif baseline_strategy == 'random_50_50':
+        # Random 50/50 between block_size=1 and block_size=2 (deterministic)
+        # Calculate current position from remaining_length
+        divisor = remaining_length if remaining_length is not None else gen_length
+        if divisor <= 0:
+            divisor = gen_length
+        
+        # Derive curr_pos from remaining_length
+        curr_pos = gen_length - (remaining_length if remaining_length is not None else gen_length)
+        
+        # Use curr_pos as seed for reproducibility (each position gets unique seed)
+        # Add 1 to avoid seed=0 (which always produces the same result)
+        seed = (curr_pos + 1) * 31337  # Prime number multiplier for better distribution
+        rng = np.random.RandomState(seed)
+        predicted_block_size = rng.choice([1, 2])  # 50/50 random choice
+        
+        return float(predicted_block_size) / divisor
+    
+    # Normal scheduler mode
     # Feature order must match training (train_scheduler.py)
     # 30 features total
     feature_order = [
@@ -2401,7 +2434,8 @@ def run_inference_with_scheduler(
     instruction=None,
     output_path="./output/charles_inference_results.csv",
     scheduler_type='xgboost',
-    evaluation_split=None
+    evaluation_split=None,
+    baseline_strategy=None
 ):
     """
     Run scheduler-guided dynamic block size inference (CHARLES method).
@@ -2437,7 +2471,15 @@ def run_inference_with_scheduler(
     from generate import generate_charles, extract_numerical
     
     print("="*80)
-    if scheduler_type == 'neural':
+    if baseline_strategy is not None:
+        print(f"🧪 BASELINE MODE: {baseline_strategy}")
+        if baseline_strategy == 'always_1':
+            print("   Always predict block_size=1 (conservative, ~100% acc, 1.0x speedup)")
+        elif baseline_strategy == 'always_2':
+            print("   Always predict block_size=2 (aggressive, upper bound speedup)")
+        elif baseline_strategy == 'random_50_50':
+            print("   Random 50/50 between 1 and 2 (deterministic, untrained baseline)")
+    elif scheduler_type == 'neural':
         print("🚀 CHARLES: Neural Scheduler Head-Guided Dynamic Block Size Inference")
     elif scheduler_type == 'xgboost':
         print("🚀 CHARLES: XGBoost-Guided Dynamic Block Size Inference")
@@ -2445,8 +2487,11 @@ def run_inference_with_scheduler(
         print(f"🚀 CHARLES: Dynamic Block Size Inference (Unknown scheduler type: {scheduler_type})")
     print("="*80)
     
-    # Load scheduler (only for XGBoost)
-    if scheduler_type == 'xgboost':
+    # Load scheduler (only for XGBoost, and only if not using baseline)
+    if baseline_strategy is not None:
+        print(f"⏭️  Skipping scheduler load (baseline mode)")
+        scheduler = None  # Not needed for baseline mode
+    elif scheduler_type == 'xgboost':
         print(f"📥 Loading XGBoost scheduler from: {scheduler_path}")
         scheduler = xgb.XGBRegressor() if use_regression else xgb.XGBClassifier()
         scheduler.load_model(scheduler_path)
@@ -2538,7 +2583,8 @@ def run_inference_with_scheduler(
             use_regression=use_regression,
             block_size_offset=block_size_offset,
             max_block_size=max_block_size,
-            scheduler_type=scheduler_type
+            scheduler_type=scheduler_type,
+            baseline_strategy=baseline_strategy
         )
         
         end_time = time.time()
