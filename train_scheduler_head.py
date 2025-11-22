@@ -435,6 +435,18 @@ def main():
         seed=CONFIG['seed']
     )
     
+    # Generate and save train/val/test question_id splits for inference
+    # Note: This uses the CSV version of the data to extract question_ids
+    from inference import generate_train_val_test_splits
+    csv_path = CONFIG['data_path'].replace('.json', '.csv')
+    generate_train_val_test_splits(
+        data_path=csv_path,
+        test_size=0.15,  # 15% test (not used in scheduler_head training, but saved for inference)
+        val_size=CONFIG['val_split'],  # Match the val_split from this training run
+        random_state=CONFIG['seed'],
+        output_dir="./data/"
+    )
+    
     # Create train and val datasets
     train_dataset = SchedulerDataset(CONFIG['data_path'], sample_indices=train_indices)
     val_dataset = SchedulerDataset(CONFIG['data_path'], sample_indices=val_indices)

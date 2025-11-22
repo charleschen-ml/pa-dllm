@@ -17,7 +17,7 @@ import os
 # CONFIGURATION
 # ============================================================================
 # Filtering options
-FILTER_BY_ANSWER_FOUND = True  # Set to True to filter out answer_found==True samples
+FILTER_BY_ANSWER_FOUND = False  # Set to True to filter out answer_found==True samples
 FILTER_BY_POSITION_RELATIVE = False  # Set to True to filter by position_relative range
 
 # Position filtering bounds (only used if FILTER_BY_POSITION_RELATIVE=True)
@@ -25,7 +25,7 @@ LOWER_BOUND = 0.3  # Minimum position_relative (e.g., 0.0 = start, 1.0 = end)
 UPPER_BOUND = 0.7  # Maximum position_relative
 
 # Label column to analyze (used for feature correlation plots)
-LABEL_COLUMN = 'block_size_rel'  # Options: 'block_size' or 'block_size_rel'
+LABEL_COLUMN = 'block_size'  # Options: 'block_size' or 'block_size_rel'
 
 # Label column for histogram
 HISTOGRAM_LABEL_COLUMN = 'block_size'  # Options: 'block_size' or 'block_size_rel'

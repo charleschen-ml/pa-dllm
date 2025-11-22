@@ -174,16 +174,17 @@ def predict_block_size_xgboost(
         features = additional_features.get(curr_pos, {})
         features['position_relative'] = position_relative
         
+        # Calculate remaining tokens for accurate prediction
+        remaining_tokens = gen_length - curr_pos
+        
         # Get relative block size from XGBoost
         block_size_rel = predict_block_size(
             scheduler=scheduler,
             features=features,
             gen_length=gen_length,
-            use_regression=use_regression
+            use_regression=use_regression,
+            remaining_length=remaining_tokens
         )
-        
-        # Convert to absolute block size based on REMAINING tokens
-        remaining_tokens = gen_length - curr_pos
         block_size_raw = block_size_rel * remaining_tokens
         block_size = int(round(block_size_raw))
         

@@ -408,7 +408,7 @@ def run_inference_batch(model, tokenizer, device, model_args, input_csv_path, ou
         print(f"decoded input=\n{tokenizer.decode(input_ids[0], skip_special_tokens=True)}")
 
         # Run generation
-        out = generate_vanilla(
+        out, block_size_preds = generate_vanilla(
             model=model,
             tokenizer=tokenizer,
             prompt=input_ids,
@@ -1945,6 +1945,169 @@ if __name__ == "__main__":
     main(script_args, model_args, inference_args)
 
 # ==============================================================================
+# INTERPOLATION GENERATION
+# ==============================================================================
+
+def generate_interpolations(
+    model,
+    tokenizer,
+    device,
+    model_args,
+    greedy_csv_path,
+    output_csv_path,
+    num_questions=None,
+    instruction=None,
+    block_size_max=None
+):
+    """
+    Generate interpolated training samples from greedy baseline samples.
+    
+    For each question in the greedy CSV:
+    1. Extract the prompt (from position=0)
+    2. Extract the greedy block_size sequence
+    3. Calculate interpolations using calculate_interpolations()
+    4. Generate samples for each interpolation setting
+    5. Write to output CSV
+    
+    Args:
+        model: Loaded model
+        tokenizer: Loaded tokenizer
+        device: Device (cuda/cpu)
+        model_args: ModelConfig object
+        greedy_csv_path: Path to greedy baseline CSV (e.g., 'data/sft_training_samples_multi_greedy_parallel.csv')
+        output_csv_path: Path to output interpolated samples CSV
+        num_questions: Number of questions to process (None = process all)
+        instruction: Optional instruction prefix to use when calling generate_one_sample
+        block_size_max: Maximum block size to cap sweep values at (None = no cap)
+    
+    Returns:
+        all_interpolated_samples: List of interpolated sample dictionaries
+    """
+    import pandas as pd
+    import time
+    from calculate_interpolations import calculate_interpolations
+    
+    print(f"\n{'='*80}")
+    print(f"🔄 GENERATING INTERPOLATIONS")
+    print(f"{'='*80}")
+    print(f"📖 Reading greedy samples from: {greedy_csv_path}")
+    print(f"💾 Will write interpolations to: {output_csv_path}")
+    
+    # Read greedy CSV
+    start_time = time.time()
+    df = pd.read_csv(greedy_csv_path)
+    print(f"✅ Loaded {len(df)} rows from greedy CSV")
+    
+    # Load GSM8K answers (question_id is the row index in gsm8k_correct.csv)
+    gsm8k_df = pd.read_csv("./data/gsm8k_correct.csv")
+    print(f"✅ Loaded {len(gsm8k_df)} answers from gsm8k_correct.csv")
+    
+    # Group by question_id
+    grouped = df.groupby('question_id')
+    total_questions = len(grouped)
+    print(f"📊 Found {total_questions} unique questions in CSV")
+    
+    # Limit to num_questions if specified
+    if num_questions is not None:
+        grouped = list(grouped)[:num_questions]
+        print(f"🎯 Processing first {num_questions} questions (out of {total_questions} total)")
+    else:
+        grouped = list(grouped)
+        print(f"🎯 Processing all {total_questions} questions")
+    
+    # Process each question
+    all_interpolated_samples = []
+    for q_idx, (question_id, group_df) in enumerate(grouped, 1):
+        print(f"\n{'─'*80}")
+        print(f"📝 Processing question {q_idx}/{len(grouped)} (question_id={question_id})")
+        
+        # Sort by position to ensure correct order
+        group_df = group_df.sort_values('position')
+        
+        # Extract prompt from position=0 row
+        prompt_row = group_df[group_df['position'] == 0].iloc[0]
+        prompt = prompt_row['question']  # This already has the instruction prepended
+        
+        # Look up correct answer from gsm8k_correct.csv using question_id as row index
+        correct_answer = gsm8k_df.iloc[question_id]['answer_numerical']
+        print(f"   Correct answer: {correct_answer}")
+        
+        # Reconstruct block_size list from all rows
+        block_size_greedy = group_df['block_size'].tolist()
+        print(f"   Greedy block_size: {block_size_greedy}")
+        
+        # Generate interpolations
+        interpolations = calculate_interpolations(block_size_greedy)
+        print(f"   Generated {len(interpolations)} interpolation settings")
+        
+        # Generate samples for each interpolation
+        for interp_idx, manual_setting in enumerate(interpolations, 1):
+            # Calculate curr_pos: the next block index to optimize (not token position!)
+            # If manual_setting = {0: 2, 1: 3}, we've fixed blocks 0-1 and will optimize block 2
+            curr_pos = max(manual_setting.keys()) + 1
+            curr_pos_metadata = curr_pos  # Save for metadata before function call
+            
+            # Also calculate token_position for debugging
+            token_position = sum(manual_setting.values())
+            print(f"   ⚙️  Interpolation {interp_idx}/{len(interpolations)}: {manual_setting}")
+            print(f"      → curr_pos (block index)={curr_pos}, token_position={token_position}")
+            
+            # Call generate_one_sample with manual_settings and curr_pos
+            # Note: We pass instruction=None because prompt already has instruction prepended
+            sample_data = generate_one_sample(
+                model=model,
+                tokenizer=tokenizer,
+                device=device,
+                prompt=prompt,
+                model_args=model_args,
+                gen_length=32,  # Match training parameters
+                base_block_length=1,
+                steps=32,
+                curr_pos=curr_pos,  # Position to optimize (sum of block sizes)
+                manual_settings=manual_setting,  # Pass dict directly, not wrapped in list
+                correct_answer=correct_answer,  # Pass correct answer for optimization
+                instruction=None,  # prompt already has instruction
+                block_size_max=block_size_max
+            )
+            
+            # Add metadata (use saved curr_pos_metadata to ensure correct value)
+            sample_data['question_id'] = question_id
+            sample_data['question'] = prompt
+            sample_data['interpolation_idx'] = interp_idx
+            sample_data['curr_pos'] = curr_pos_metadata  # Block index being optimized
+            # Override position field to match token_position (important for CSV output)
+            if sample_data['features'] and len(sample_data['features']) > 0:
+                sample_data['features'][0] = list(sample_data['features'][0])
+                sample_data['features'][0][2] = token_position  # position is index 2, should be token count
+            
+            all_interpolated_samples.append(sample_data)
+            print(f"      ✅ Generated sample for curr_pos={curr_pos_metadata}")
+    
+    # Save to JSON and CSV using the existing helper function
+    print(f"\n{'='*80}")
+    print(f"💾 SAVING INTERPOLATED SAMPLES")
+    print(f"{'='*80}")
+    
+    # Generate JSON path from CSV path
+    json_output_path = output_csv_path.replace('.csv', '.json')
+    
+    # Use existing write_to_json_csv function
+    write_to_json_csv(
+        all_interpolated_samples, 
+        json_output_path=json_output_path,
+        csv_output_path=output_csv_path,
+        include_question_metadata=True  # Include question_id and question columns
+    )
+    
+    elapsed_time = time.time() - start_time
+    print(f"⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+    print(f"⚡ Samples per second: {len(all_interpolated_samples)/elapsed_time:.2f}")
+    print(f"{'='*80}\n")
+    
+    return all_interpolated_samples
+
+
+# ==============================================================================
 # XGBOOST SCHEDULER-GUIDED INFERENCE
 # ==============================================================================
 
@@ -1974,15 +2137,16 @@ def load_scheduler(model_path, use_regression=True):
     return scheduler
 
 
-def predict_block_size(scheduler, features, gen_length, use_regression=True):
+def predict_block_size(scheduler, features, gen_length, use_regression=True, remaining_length=None):
     """
     Predict relative block size for current position using XGBoost scheduler.
     
     Args:
         scheduler: Trained XGBoost model
         features: Dict of feature values
-        gen_length: Total generation length (not used, kept for compatibility)
+        gen_length: Total generation length (for regression mode)
         use_regression: If True, scheduler outputs continuous value; else class index
+        remaining_length: Remaining tokens to generate (for classification mode)
     
     Returns:
         block_size_rel (float): Predicted relative block size (0.0 to 1.0)
@@ -2011,15 +2175,212 @@ def predict_block_size(scheduler, features, gen_length, use_regression=True):
         # Predict continuous block_size_rel
         block_size_rel = scheduler.predict(feature_array)[0]
     else:
-        # Predict class and convert to relative size
+        # Predict class and convert to absolute block_size
         class_probs = scheduler.predict_proba(feature_array)[0]
         predicted_class = np.argmax(class_probs)
         
-        # Convert class to relative size (classes: 0=1/32, 1=1/16, 2=1/8, 3=1/4, 4=1/2, 5=1)
-        rel_values = [1/32, 1/16, 1/8, 1/4, 1/2, 1.0]
-        block_size_rel = rel_values[predicted_class]
+        # Convert class index to actual block_size (class 0 = 1 token, class 1 = 2 tokens, etc.)
+        predicted_block_size = predicted_class + 1
+        
+        # Convert block_size to relative size for consistency with generate_charles()
+        # The caller will multiply by remaining_tokens to get back the absolute block_size
+        # Use remaining_length if provided, otherwise fall back to gen_length
+        divisor = remaining_length if remaining_length is not None else gen_length
+        if divisor <= 0:
+            divisor = gen_length
+        block_size_rel = predicted_block_size / divisor
     
     return block_size_rel
+
+
+def generate_train_val_test_splits(
+    data_path,
+    test_size=0.15,
+    val_size=0.15,
+    random_state=42,
+    output_dir="./data/"
+):
+    """
+    Generate and save train/val/test splits from training data.
+    
+    This function:
+    1. Loads training data and extracts unique question_ids
+    2. Splits by question_id (to prevent leakage)
+    3. Saves question_ids to train_question_ids.txt, val_question_ids.txt, test_question_ids.txt
+    4. Also saves to a combined JSON file
+    
+    Args:
+        data_path: Path to training data CSV with 'question_id' column
+        test_size: Fraction for test set (default: 0.15)
+        val_size: Fraction for validation set (default: 0.15)
+        random_state: Random seed for reproducibility (default: 42)
+        output_dir: Directory to save split files (default: "./data/")
+    
+    Returns:
+        dict with 'train', 'val', 'test' keys containing lists of question_ids
+    """
+    import pandas as pd
+    import numpy as np
+    from sklearn.model_selection import train_test_split
+    import json
+    import os
+    
+    print(f"\n{'='*80}")
+    print(f"🔀 GENERATING TRAIN/VAL/TEST SPLITS")
+    print(f"{'='*80}")
+    
+    # Load data
+    print(f"📂 Loading data from {data_path}...")
+    df = pd.read_csv(data_path)
+    print(f"✅ Loaded {len(df)} samples")
+    
+    if 'question_id' not in df.columns:
+        raise ValueError(f"❌ ERROR: {data_path} must have 'question_id' column")
+    
+    # Get unique questions
+    unique_questions = df['question_id'].unique()
+    print(f"   Unique question_ids: {len(unique_questions)}")
+    
+    # Split by question_id (to prevent leakage)
+    print(f"\n🔀 Splitting {len(unique_questions)} questions...")
+    
+    # First split: separate test set (completely unseen)
+    train_val_questions, test_questions = train_test_split(
+        unique_questions, test_size=test_size, random_state=random_state
+    )
+    
+    # Second split: split remaining into train and val
+    val_size_adjusted = val_size / (1 - test_size)
+    train_questions, val_questions = train_test_split(
+        train_val_questions, test_size=val_size_adjusted, random_state=random_state
+    )
+    
+    print(f"\n📊 Split sizes:")
+    print(f"   Train: {len(train_questions)} questions")
+    print(f"   Val:   {len(val_questions)} questions")
+    print(f"   Test:  {len(test_questions)} questions")
+    print(f"   Total: {len(train_questions) + len(val_questions) + len(test_questions)} questions")
+    
+    # Verify no overlap
+    assert len(set(train_questions) & set(val_questions)) == 0, "Train/Val overlap detected!"
+    assert len(set(train_questions) & set(test_questions)) == 0, "Train/Test overlap detected!"
+    assert len(set(val_questions) & set(test_questions)) == 0, "Val/Test overlap detected!"
+    print(f"   ✅ No overlaps between sets")
+    
+    # Count samples in each set
+    train_mask = df['question_id'].isin(train_questions)
+    val_mask = df['question_id'].isin(val_questions)
+    test_mask = df['question_id'].isin(test_questions)
+    
+    print(f"\n📊 Sample counts:")
+    print(f"   Train: {train_mask.sum()} samples")
+    print(f"   Val:   {val_mask.sum()} samples")
+    print(f"   Test:  {test_mask.sum()} samples")
+    
+    # Get class distributions (if block_size column exists)
+    if 'block_size' in df.columns:
+        print(f"\n📊 Class distributions:")
+        for name, mask in [("Train", train_mask), ("Val", val_mask), ("Test", test_mask)]:
+            subset = df[mask]
+            minority_pct = 100 * (subset['block_size'] == 1).mean()
+            print(f"   {name}: {minority_pct:.2f}% minority class (1 token)")
+    
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Save question_ids to files
+    splits = {
+        'train': sorted(train_questions.tolist()),
+        'val': sorted(val_questions.tolist()),
+        'test': sorted(test_questions.tolist())
+    }
+    
+    # Save as JSON
+    json_path = f"{output_dir}train_val_test_question_ids.json"
+    with open(json_path, 'w') as f:
+        json.dump(splits, f, indent=2)
+    print(f"\n💾 Saved question_ids to {json_path}")
+    
+    # Save as separate text files (easier for bash/grep)
+    for split_name, qids in splits.items():
+        txt_path = f"{output_dir}{split_name}_question_ids.txt"
+        with open(txt_path, 'w') as f:
+            f.write('\n'.join(map(str, qids)))
+        print(f"   {split_name}: {txt_path} ({len(qids)} question_ids)")
+    
+    # Print sample question_ids for verification
+    print(f"\n🔍 Sample question_ids from each set:")
+    print(f"   Train (first 10): {splits['train'][:10]}")
+    print(f"   Val (first 10):   {splits['val'][:10]}")
+    print(f"   Test (first 10):  {splits['test'][:10]}")
+    
+    print(f"{'='*80}\n")
+    
+    return splits
+
+
+def load_split(questions_csv_path, evaluation_split):
+    """
+    Filter questions CSV to specific train/val/test split.
+    
+    Args:
+        questions_csv_path: Path to questions CSV with question_id column
+        evaluation_split: None (all questions) or 'train'/'val'/'test'
+    
+    Returns:
+        filtered_csv_path: Path to filtered CSV (or original if split=None)
+    """
+    import pandas as pd
+    
+    if evaluation_split is None:
+        return questions_csv_path
+    
+    # Load question_ids for the selected split
+    split_file = f"./data/{evaluation_split}_question_ids.txt"
+    print(f"\n{'='*80}")
+    print(f"📋 FILTERING TO {evaluation_split.upper()} SET")
+    print(f"{'='*80}")
+    print(f"Loading question_ids from: {split_file}")
+    
+    try:
+        with open(split_file, 'r') as f:
+            question_ids_filter = set(int(line.strip()) for line in f if line.strip())
+        print(f"✅ Loaded {len(question_ids_filter)} question_ids for {evaluation_split} set")
+        print(f"   Sample IDs: {sorted(list(question_ids_filter))[:10]}")
+        print(f"   Max question_id: {max(question_ids_filter)}")
+    except FileNotFoundError:
+        print(f"❌ ERROR: {split_file} not found!")
+        print(f"   Run 'python get_train_test_splits.py' first to generate split files")
+        raise
+    
+    # Load questions CSV and filter by question_id
+    print(f"\n📊 Filtering dataset:")
+    print(f"   Source: {questions_csv_path}")
+    
+    df_all = pd.read_csv(questions_csv_path)
+    print(f"   Total questions: {len(df_all)}")
+    
+    # Ensure question_id column exists
+    if 'question_id' not in df_all.columns:
+        raise ValueError(f"❌ ERROR: {questions_csv_path} must have 'question_id' column")
+    
+    # Filter to only the question_ids in the split
+    df_filtered = df_all[df_all['question_id'].isin(question_ids_filter)].copy()
+    print(f"   Filtered to {evaluation_split}: {len(df_filtered)} questions")
+    
+    # Ensure required columns exist
+    if 'question' not in df_filtered.columns:
+        raise ValueError(f"❌ ERROR: {questions_csv_path} must have 'question' column")
+    if 'answer_numerical' not in df_filtered.columns:
+        print(f"   ⚠️  WARNING: No 'answer_numerical' column, accuracy will be 0")
+        df_filtered['answer_numerical'] = 0
+    
+    # Save to temporary CSV
+    temp_csv_path = f"./data/gsm8k_{evaluation_split}_temp.csv"
+    df_filtered.to_csv(temp_csv_path, index=False)
+    print(f"   Saved filtered questions to: {temp_csv_path}\n")
+    
+    return temp_csv_path
 
 
 def run_inference_with_scheduler(
@@ -2039,7 +2400,8 @@ def run_inference_with_scheduler(
     use_regression=True,
     instruction=None,
     output_path="./output/charles_inference_results.csv",
-    scheduler_type='xgboost'
+    scheduler_type='xgboost',
+    evaluation_split=None
 ):
     """
     Run scheduler-guided dynamic block size inference (CHARLES method).
@@ -2064,6 +2426,7 @@ def run_inference_with_scheduler(
         instruction: Optional instruction prefix for questions
         output_path: Path to save results CSV
         scheduler_type: Type of scheduler. 'xgboost' or 'neural' (default: 'xgboost')
+        evaluation_split: Filter to specific split. None='all', 'train'/'val'/'test'=specific split
     
     Returns:
         results_df: DataFrame with inference results
@@ -2094,23 +2457,41 @@ def run_inference_with_scheduler(
     else:
         raise ValueError(f"Unknown scheduler_type: {scheduler_type}. Must be 'neural' or 'xgboost'")
     
-    # Load questions
-    df_questions = pd.read_csv(questions_csv_path)
+    # Filter to specific split if requested
+    questions_csv_path = load_split(questions_csv_path, evaluation_split)
     
-    # Limit to num_questions if specified
+    # Load questions (already filtered by load_split if evaluation_split was set)
+    df_questions = pd.read_csv(questions_csv_path)
+    total_in_split = len(df_questions)
+    
+    # Limit to num_questions if specified (applied to the filtered split)
     if num_questions is not None:
         df_questions = df_questions.head(num_questions)
+        print(f"\n🔢 Limiting to first {num_questions} questions from {evaluation_split or 'all'} split")
+        print(f"   ({num_questions} out of {total_in_split} available)")
     
     print(f"\n{'='*80}")
     print("📊 GENERATION SETTINGS")
     print(f"{'='*80}")
+    if evaluation_split:
+        print(f"  Evaluation split: {evaluation_split.upper()} ({total_in_split} questions in split)")
+        if num_questions:
+            print(f"  Processing: First {num_questions} questions from {evaluation_split} split")
+        else:
+            print(f"  Processing: All {total_in_split} questions in {evaluation_split} split")
+    else:
+        print(f"  Evaluation split: ALL QUESTIONS")
+        if num_questions:
+            print(f"  Processing: First {num_questions} questions")
+        else:
+            print(f"  Processing: All questions")
     print(f"  Generation length: {gen_length}")
     print(f"  Temperature: {temperature}")
     print(f"  CFG scale: {cfg_scale}")
     print(f"  Remasking: {remasking}")
     print(f"  Block size offset: {block_size_offset} (conservative adjustment)")
     print(f"  Max block size: {max_block_size} (matches training data cap)")
-    print(f"  Total questions: {len(df_questions)}")
+    print(f"  Total questions to process: {len(df_questions)}")
     print(f"{'='*80}\n")
     
     # Store results
@@ -2246,5 +2627,19 @@ def run_inference_with_scheduler(
     # Save results to CSV
     results_df.to_csv(output_path, index=False)
     print(f"💾 Results saved to: {output_path}")
+    
+    # Print evaluation summary
+    print("\n" + "="*80)
+    print("📊 EVALUATION SUMMARY")
+    print("="*80)
+    if evaluation_split is not None:
+        print(f"Split: {evaluation_split.upper()} SET")
+    else:
+        print(f"Split: ALL QUESTIONS")
+    print(f"Questions evaluated: {len(results_df)}")
+    print(f"✅ Correct: {num_correct}/{len(results_df)}")
+    print(f"📈 Accuracy: {accuracy:.2f}%")
+    print(f"📁 Results saved to: {output_path}")
+    print("="*80 + "\n")
     
     return results_df

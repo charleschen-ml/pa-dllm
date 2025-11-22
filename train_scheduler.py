@@ -19,7 +19,10 @@ import pandas as pd
 import numpy as np
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import (
+    accuracy_score, classification_report, confusion_matrix,
+    roc_auc_score, average_precision_score, precision_recall_curve, auc
+)
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
@@ -53,6 +56,49 @@ def class_to_blocksize(class_idx):
         block_size: Integer number of tokens (1, 2, 3, ...)
     """
     return int(class_idx) + 1  # Convert from 0-indexed to 1-indexed
+
+
+def plot_pr_curve(y_true, y_proba, save_path="./output/scheduler_pr_curve.png"):
+    """
+    Plot Precision-Recall curve for binary classification.
+    
+    Args:
+        y_true: True binary labels (0 or 1)
+        y_proba: Predicted probabilities for class 0 (minority class = 1 token)
+        save_path: Path to save the plot
+    """
+    # Calculate precision-recall curve for class 0 (minority class)
+    # pos_label=0 tells sklearn that class 0 is our target positive class
+    precision, recall, thresholds = precision_recall_curve(y_true, y_proba, pos_label=0)
+    pr_auc = auc(recall, precision)
+    avg_precision = average_precision_score(y_true, y_proba, pos_label=0)
+    
+    # Calculate baseline (random classifier) = frequency of class 0
+    baseline = np.mean(y_true == 0)
+    
+    plt.figure(figsize=(10, 7))
+    plt.plot(recall, precision, linewidth=2.5, label=f'Model (AP = {avg_precision:.3f})', color='#2E86DE')
+    plt.axhline(y=baseline, color='#EE5A6F', linestyle='--', linewidth=2, 
+                label=f'Random Baseline = {baseline:.3f}')
+    
+    # Add annotation about what "good" looks like
+    plt.text(0.5, 0.95, f'Minority class frequency: {baseline:.1%}', 
+             transform=plt.gca().transAxes, fontsize=10, verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+    
+    plt.xlabel('Recall (Sensitivity) - What % of 1-token cases we catch', fontsize=11)
+    plt.ylabel('Precision (PPV) - When we predict 1-token, how often correct?', fontsize=11)
+    plt.title(f'Precision-Recall Curve (Minority Class: 1 token)\nAP = {avg_precision:.3f} | Baseline = {baseline:.3f}', 
+              fontsize=13, fontweight='bold')
+    plt.legend(loc='best', fontsize=11)
+    plt.grid(True, alpha=0.3, linestyle=':')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"📈 Precision-Recall curve saved to {save_path}")
 
 
 def plot_confusion_matrix(y_true, y_pred, num_classes, save_path="./output/scheduler_confusion_matrix.png"):
@@ -105,6 +151,16 @@ def main(use_wandb=True):
     # ========================================
     USE_REGRESSION = False  # Set to True for regression, False for classification
     NUM_CLASSES = 2  # Number of token classes (2 for binary: 1 vs 2 tokens, 5 for 1-5 tokens, etc.)
+    USE_CLASS_WEIGHTS = True  # Set to False to disable sample reweighting (sklearn mechanism)
+    SCALE_POS_WEIGHT = 0  # XGBoost binary classification only: boost minority class
+                             # None = auto-compute from class ratio (recommended)
+                             # >0 = manual weight (e.g., 10.0 for 10x boost)
+                             # 0 = disable (no boost)
+                             # Note: Can be used WITH or WITHOUT USE_CLASS_WEIGHTS
+    DECISION_THRESHOLD = 0.5  # Binary classification: threshold for predicting class 1 (2 tokens)
+                              # Default: 0.5 (balanced)
+                              # Lower (e.g., 0.3): predict 1-token more often → higher recall for class 0
+                              # Higher (e.g., 0.7): predict 2-tokens more often → higher recall for class 1
     FILTER_BY_ANSWER_FOUND = False  # Set to True to filter out answer_found==True samples
     
     # ========================================
@@ -112,8 +168,8 @@ def main(use_wandb=True):
     # ========================================
     HYPERPARAMS = {
         # Tree structure
-        'n_estimators': 300,      # Number of trees (more = better fit, slower). Try: 50, 100, 200, 500
-        'max_depth': 9,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
+        'n_estimators': 1000,      # Number of trees (more = better fit, slower). Try: 50, 100, 200, 500
+        'max_depth': 6,           # Tree depth (lower = less overfitting). Try: 3, 4, 6, 9
         
         # Learning
         'learning_rate': 0.05,    # Learning rate (lower = slower, more careful). Try: 0.01, 0.05, 0.1, 0.3
@@ -146,6 +202,8 @@ def main(use_wandb=True):
             HYPERPARAMS['eval_metric'] = 'mlogloss'
             print(f"🎯 MODE: Multi-class Classification (1-{NUM_CLASSES} tokens)")
     
+    # Note: scale_pos_weight will be added later after we compute class distribution
+    
     # Data configuration
     DATA_PATH = "./data/sft_training_samples_multi_greedy_parallel.csv"
     # DATA_PATH = "./data/sft_training_samples_greedy.csv"
@@ -161,10 +219,18 @@ def main(use_wandb=True):
     if use_wandb:
         try:
             import wandb
+            wandb_config = HYPERPARAMS.copy()
+            wandb_config.update({
+                'use_regression': USE_REGRESSION,
+                'num_classes': NUM_CLASSES,
+                'use_class_weights': USE_CLASS_WEIGHTS,
+                'scale_pos_weight_config': SCALE_POS_WEIGHT,
+                'decision_threshold': DECISION_THRESHOLD
+            })
             wandb.init(
                 project="pa-dllm-scheduler-training",
                 name=f"xgboost_scheduler_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}",
-                config=HYPERPARAMS
+                config=wandb_config
             )
             print("📊 wandb initialized for training monitoring")
         except ImportError:
@@ -325,6 +391,24 @@ def main(use_wandb=True):
             pct = 100 * count / len(y)
             token_str = f"{block_size} token" + ("s" if block_size > 1 else "")
             print(f"  Class {class_idx} ({token_str:>8}): {count:5d} samples ({pct:5.1f}%)")
+        
+        # Add scale_pos_weight for binary classification
+        if NUM_CLASSES == 2:
+            if SCALE_POS_WEIGHT is None:
+                # Auto-compute: (count of class 1) / (count of class 0)
+                count_class_0 = (y == 0).sum()
+                count_class_1 = (y == 1).sum()
+                scale_pos_weight_value = count_class_1 / count_class_0 if count_class_0 > 0 else 1.0
+                HYPERPARAMS['scale_pos_weight'] = scale_pos_weight_value
+                print(f"\n⚖️  Auto scale_pos_weight: {scale_pos_weight_value:.2f}")
+                print(f"   (Boosts minority class to balance {count_class_1}:{count_class_0} ratio)")
+            elif SCALE_POS_WEIGHT > 0:
+                HYPERPARAMS['scale_pos_weight'] = SCALE_POS_WEIGHT
+                print(f"\n⚖️  Manual scale_pos_weight: {SCALE_POS_WEIGHT:.2f}")
+                print(f"   (Custom weight for minority class)")
+            else:
+                print(f"\n⚖️  scale_pos_weight disabled (set to 0)")
+                print(f"   (No special weighting for minority class)")
     
     # Train/val/test split by question_id to prevent leakage
     train_pct = int((1 - TEST_SIZE - VAL_SIZE) * 100)
@@ -382,6 +466,16 @@ def main(use_wandb=True):
             print(f"  Train: {len(train_questions)} questions → {len(X_train)} samples")
             print(f"  Val:   {len(val_questions)} questions → {len(X_val)} samples (for early stopping)")
             print(f"  Test:  {len(test_questions)} questions → {len(X_test)} samples (completely unseen)")
+            
+            # Save question_id splits to files for inference
+            from inference import generate_train_val_test_splits
+            generate_train_val_test_splits(
+                data_path=DATA_PATH,
+                test_size=TEST_SIZE,
+                val_size=VAL_SIZE,
+                random_state=42,
+                output_dir="./data/"
+            )
         else:
             # Fallback: regular split if question_id not available
             print("⚠️  question_id not found, using sample-level split (may have leakage!)")
@@ -399,7 +493,7 @@ def main(use_wandb=True):
             print(f"  Test:  {len(X_test)} samples")
     
     # Compute sample weights (only for classification)
-    if not USE_REGRESSION:
+    if not USE_REGRESSION and USE_CLASS_WEIGHTS:
         print("\n⚖️  Computing class weights for imbalanced data...")
         from sklearn.utils.class_weight import compute_sample_weight
         
@@ -414,6 +508,9 @@ def main(use_wandb=True):
                 avg_weight = sample_weights[y_train == class_idx].mean()
                 print(f"  Class {class_idx} ({token_str:>8}): avg weight = {avg_weight:.2f}")
     else:
+        if not USE_REGRESSION and not USE_CLASS_WEIGHTS:
+            print("\n⚖️  Class reweighting disabled (USE_CLASS_WEIGHTS=False)")
+            print("   Training with uniform sample weights (may favor majority class)")
         sample_weights = None
     
     # Train XGBoost Model
@@ -421,6 +518,8 @@ def main(use_wandb=True):
     print(f"\n🚀 Training XGBoost {model_type}...")
     print(f"  Hyperparameters: n_estimators={HYPERPARAMS['n_estimators']}, "
           f"max_depth={HYPERPARAMS['max_depth']}, lr={HYPERPARAMS['learning_rate']}")
+    if not USE_REGRESSION and NUM_CLASSES == 2 and 'scale_pos_weight' in HYPERPARAMS:
+        print(f"  scale_pos_weight={HYPERPARAMS['scale_pos_weight']:.2f} (minority class boost)")
     
     # Add early stopping and monotonic constraints to hyperparameters
     model_params = HYPERPARAMS.copy()
@@ -505,9 +604,9 @@ def main(use_wandb=True):
                 y_val_pred_proba = np.column_stack([1 - y_val_pred_proba, y_val_pred_proba])
                 y_test_pred_proba = np.column_stack([1 - y_test_pred_proba, y_test_pred_proba])
             
-            y_train_pred = (y_train_pred_proba[:, 1] > 0.5).astype(int)
-            y_val_pred = (y_val_pred_proba[:, 1] > 0.5).astype(int)
-            y_test_pred = (y_test_pred_proba[:, 1] > 0.5).astype(int)
+            y_train_pred = (y_train_pred_proba[:, 1] > DECISION_THRESHOLD).astype(int)
+            y_val_pred = (y_val_pred_proba[:, 1] > DECISION_THRESHOLD).astype(int)
+            y_test_pred = (y_test_pred_proba[:, 1] > DECISION_THRESHOLD).astype(int)
         else:
             # Multi-class: softprob returns probabilities, take argmax for class labels
             y_train_pred_proba = model.predict_proba(X_train)
@@ -522,10 +621,51 @@ def main(use_wandb=True):
         val_acc = accuracy_score(y_val, y_val_pred)
         test_acc = accuracy_score(y_test, y_test_pred)
         
+        print(f"\n🎯 Decision threshold: {DECISION_THRESHOLD} (for predicting class 1 = 2 tokens)")
         print(f"Train Accuracy: {train_acc:.3f} ({100*train_acc:.1f}%)")
         print(f"Val Accuracy:   {val_acc:.3f} ({100*val_acc:.1f}%)  ← Used for early stopping")
         print(f"Test Accuracy:  {test_acc:.3f} ({100*test_acc:.1f}%)  ← Final unseen evaluation")
         print(f"Overfitting gap (train-val): {train_acc - val_acc:.3f}")
+        
+        # Calculate PR-AUC and ROC-AUC for imbalanced classification
+        # For binary classification, use class 0 (minority class) as positive
+        if NUM_CLASSES == 2:
+            # Get probabilities for the minority class (class 0 = 1 token)
+            # Note: sklearn expects higher scores for positive class, so we use proba[:, 0]
+            # and specify pos_label=0 to tell sklearn that class 0 is our target
+            y_train_proba_minority = y_train_pred_proba[:, 0]
+            y_val_proba_minority = y_val_pred_proba[:, 0]
+            y_test_proba_minority = y_test_pred_proba[:, 0]
+            
+            # Calculate PR-AUC (focuses on minority class = class 0)
+            train_pr_auc = average_precision_score(y_train, y_train_proba_minority, pos_label=0)
+            val_pr_auc = average_precision_score(y_val, y_val_proba_minority, pos_label=0)
+            test_pr_auc = average_precision_score(y_test, y_test_proba_minority, pos_label=0)
+            
+            # Calculate ROC-AUC (for comparison)
+            # sklearn's roc_auc_score expects higher scores for positive class
+            # Since we want class 0 as positive, we create binary labels: class 0 → 1, class 1 → 0
+            y_train_binary = (y_train == 0).astype(int)
+            y_val_binary = (y_val == 0).astype(int)
+            y_test_binary = (y_test == 0).astype(int)
+            
+            train_roc_auc = roc_auc_score(y_train_binary, y_train_proba_minority)
+            val_roc_auc = roc_auc_score(y_val_binary, y_val_proba_minority)
+            test_roc_auc = roc_auc_score(y_test_binary, y_test_proba_minority)
+            
+            # Calculate true baseline (frequency of minority class = class 0)
+            minority_freq_train = np.mean(y_train == 0)
+            minority_freq_val = np.mean(y_val == 0)
+            minority_freq_test = np.mean(y_test == 0)
+            
+            print(f"\n📈 Area Under Curve Metrics (Minority Class = 1 token = class 0):")
+            print(f"Train PR-AUC:  {train_pr_auc:.3f}  |  ROC-AUC: {train_roc_auc:.3f}")
+            print(f"Val PR-AUC:    {val_pr_auc:.3f}  |  ROC-AUC: {val_roc_auc:.3f}")
+            print(f"Test PR-AUC:   {test_pr_auc:.3f}  |  ROC-AUC: {test_roc_auc:.3f}")
+            print(f"\n💡 PR-AUC is more informative for imbalanced data ({100*minority_freq_test:.1f}% minority class)")
+            print(f"   Baseline (random classifier):")
+            print(f"     - PR-AUC ≈ {minority_freq_test:.3f} (= minority class frequency)")
+            print(f"     - ROC-AUC = 0.500")
     
     # Log to wandb
     if use_wandb:
@@ -546,7 +686,7 @@ def main(use_wandb=True):
                 "num_test_samples": len(X_test)
             })
         else:
-            wandb.log({
+            wandb_dict = {
                 "train_accuracy": train_acc,
                 "val_accuracy": val_acc,
                 "test_accuracy": test_acc,
@@ -555,7 +695,18 @@ def main(use_wandb=True):
                 "num_train_samples": len(X_train),
                 "num_val_samples": len(X_val),
                 "num_test_samples": len(X_test)
-            })
+            }
+            # Add PR-AUC and ROC-AUC for binary classification
+            if NUM_CLASSES == 2:
+                wandb_dict.update({
+                    "train_pr_auc": train_pr_auc,
+                    "val_pr_auc": val_pr_auc,
+                    "test_pr_auc": test_pr_auc,
+                    "train_roc_auc": train_roc_auc,
+                    "val_roc_auc": val_roc_auc,
+                    "test_roc_auc": test_roc_auc,
+                })
+            wandb.log(wandb_dict)
     
     # Classification-specific reports
     if not USE_REGRESSION:
@@ -584,6 +735,10 @@ def main(use_wandb=True):
                         f"f1_{class_name}": report[class_name]['f1-score'],
                     })
         
+        # Plot PR curve for binary classification
+        if NUM_CLASSES == 2:
+            plot_pr_curve(y_test, y_test_proba_minority)
+        
         # Plot confusion matrix
         plot_confusion_matrix(y_test, y_test_pred, NUM_CLASSES)
     
@@ -595,6 +750,8 @@ def main(use_wandb=True):
         wandb_plots = {"feature_importance": wandb.Image("./output/scheduler_feature_importance.png")}
         if not USE_REGRESSION:
             wandb_plots["confusion_matrix"] = wandb.Image("./output/scheduler_confusion_matrix.png")
+            if NUM_CLASSES == 2:
+                wandb_plots["pr_curve"] = wandb.Image("./output/scheduler_pr_curve.png")
         wandb.log(wandb_plots)
     
     # Save model
@@ -627,7 +784,7 @@ def main(use_wandb=True):
                 # Binary: ensure we have 2 probabilities
                 if pred_proba.ndim == 0 or len(pred_proba) == 1:
                     pred_proba = np.array([1 - pred_proba, pred_proba])
-                pred_class = (pred_proba[1] > 0.5).astype(int)
+                pred_class = (pred_proba[1] > DECISION_THRESHOLD).astype(int)
             else:
                 pred_class = np.argmax(pred_proba)
             
