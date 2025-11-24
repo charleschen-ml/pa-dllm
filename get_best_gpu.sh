@@ -6,8 +6,8 @@ set -e
 
 # Configuration
 PARTITION="coc-gpu,ice-gpu"
-QOS="coc-grade"
-NUM_GPUS=1    # Number of GPUs to request (1, 2, 4, etc.)
+QOS="coc-ice"     # Changed from coc-grade to coc-ice for separate quota
+NUM_GPUS=1        # Number of GPUs to request (1, 2, 4, etc.)
 CPUS=2
 MEM="128G"
 TIME="16:00:00"
@@ -90,26 +90,32 @@ try_allocate() {
         
         if [ "$JOB_STATE" == "RUNNING" ]; then
             echo "   ✅ SUCCESS! Allocated ${NUM_GPUS}x ${gpu_name} (Job $JOBID)"
+            
+            # Cancel the background salloc job - we'll reconnect properly
+            echo "   🔄 Reconnecting to allocation..."
+            scancel $JOBID 2>/dev/null || true
+            kill $SALLOC_PID 2>/dev/null || true
+            wait $SALLOC_PID 2>/dev/null || true
+            sleep 1
+            
             echo ""
             echo "========================================="
             echo "🎉 GPU ALLOCATED!"
             echo "========================================="
             echo "GPUs: ${NUM_GPUS}x ${gpu_name}"
-            echo "Job ID: $JOBID"
             echo "Partition: $PARTITION"
             echo ""
-            echo "Allocation is active. Run your code with:"
-            echo "  srun python3 -u run_inference.py > output/output.log 2>&1"
-            echo ""
-            echo "Or get interactive shell on GPU node:"
-            echo "  srun --pty bash"
-            echo ""
-            echo "To cancel when done:"
-            echo "  scancel $JOBID"
+            echo "Starting interactive session on GPU node..."
+            echo "You can now run commands directly (e.g., nvidia-smi)"
+            echo "Type 'exit' when done to release the allocation."
             echo "========================================="
+            echo ""
             
-            # Keep the salloc process alive (stays on login node, in tmux)
-            wait $SALLOC_PID
+            # Run salloc in foreground - this gives you a direct shell on the GPU node
+            # No need for srun - you'll be directly on the compute node
+            exec salloc -p $PARTITION --qos=$QOS --gres=gpu:${gpu_spec} --ntasks=1 --cpus-per-task=$CPUS --mem=$MEM -t $TIME
+            
+            # This line won't be reached due to exec
             exit 0
         elif [ "$JOB_STATE" == "NOTFOUND" ]; then
             echo "   ❌ Job disappeared (may have failed)"
