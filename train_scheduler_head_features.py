@@ -30,6 +30,12 @@ import trl
 # Import model loading function from run_inference
 from run_inference import load_model
 
+# Import shared utilities
+from scheduler_utils import (
+    split_by_question, evaluate_classifier, print_metrics_summary,
+    plot_confusion_matrix, plot_pr_curve
+)
+
 
 class SchedulerDataset(Dataset):
     """Dataset for training the scheduler head with XGBoost features."""
@@ -81,10 +87,10 @@ class SchedulerDataset(Dataset):
         self.features = df[self.FEATURE_COLS].values  # shape: (num_samples, 30)
         
         if use_classification:
-            # Convert block_size to class labels: 0 = 1 token, 1 = 2 tokens
+            # Convert block_size to class labels: 0 = 1 token, 1 = 2 tokens, 2 = 3 tokens, 3 = 4 tokens
             block_sizes = df['block_size'].values
-            self.labels = block_sizes - 1  # block_size=1 → class 0, block_size=2 → class 1
-            print(f"✅ Using binary classification (1 vs 2 tokens)")
+            self.labels = block_sizes - 1  # block_size=1 → class 0, block_size=2 → class 1, etc.
+            print(f"✅ Using 4-class classification (1, 2, 3, 4 tokens)")
             print(f"   Class distribution: {np.bincount(self.labels.astype(int))}")
         else:
             # Use block_size_rel for regression
@@ -120,75 +126,7 @@ class SchedulerDataset(Dataset):
         }
 
 
-def split_by_question(csv_path: str, val_split: float, num_questions: int = None, seed: int = 42):
-    """
-    Split samples by question_id to avoid data leakage.
-    
-    Groups samples by their question_id, then splits questions into train/val.
-    All samples from a question go to either train or val, never both.
-    
-    Args:
-        csv_path: Path to CSV file with samples
-        val_split: Fraction of questions for validation (e.g., 0.2 = 20%)
-        num_questions: Limit to first N questions (None = use all)
-        seed: Random seed for reproducible splits
-    
-    Returns:
-        train_indices, val_indices: Lists of sample indices for train and val
-    """
-    # Load CSV
-    df = pd.read_csv(csv_path)
-    
-    # Group samples by question_id
-    question_to_samples = {}
-    for idx, row in df.iterrows():
-        question_id = row.get('question_id', idx)  # Fallback to index if no question_id
-        
-        if question_id not in question_to_samples:
-            question_to_samples[question_id] = []
-        question_to_samples[question_id].append(idx)
-    
-    # Get list of unique question IDs (sorted for consistency)
-    question_ids = sorted(question_to_samples.keys())
-    
-    # Limit to first N questions if specified
-    if num_questions is not None:
-        question_ids = question_ids[:num_questions]
-    
-    print(f"\n📊 Question-Level Split:")
-    print(f"   Total unique questions: {len(question_ids)}")
-    print(f"   Total samples: {sum(len(question_to_samples[q]) for q in question_ids)}")
-    
-    # Shuffle questions with fixed seed
-    rng = random.Random(seed)
-    rng.shuffle(question_ids)
-    
-    # Split questions into train/val
-    # Edge case: if we have only 1 question, use it for both train and val (for overfitting tests)
-    if len(question_ids) == 1:
-        print(f"   ⚠️  Only 1 question - using same question for train AND val (overfit test)")
-        train_question_ids = question_ids
-        val_question_ids = question_ids
-    else:
-        num_val_questions = max(1, int(len(question_ids) * val_split))
-        val_question_ids = question_ids[:num_val_questions]
-        train_question_ids = question_ids[num_val_questions:]
-    
-    # Get sample indices for train and val
-    train_indices = []
-    val_indices = []
-    
-    for q_id in train_question_ids:
-        train_indices.extend(question_to_samples[q_id])
-    
-    for q_id in val_question_ids:
-        val_indices.extend(question_to_samples[q_id])
-    
-    print(f"   Train: {len(train_question_ids)} questions ({len(train_indices)} samples)")
-    print(f"   Val:   {len(val_question_ids)} questions ({len(val_indices)} samples)")
-    print(f"   ✅ No data leakage - questions are fully separated")
-    
-    return train_indices, val_indices
+# split_by_question is now imported from scheduler_utils
 
 
 def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
@@ -226,7 +164,7 @@ class FeatureOnlySchedulerMLP(nn.Module):
     This is a pure feature-based model (no transformer, no hidden states).
     Should match or beat XGBoost performance since it gets the same features.
     
-    Supports both classification (2 classes: 1 vs 2 tokens) and regression (block_size_rel).
+    Supports both classification (4 classes: 1, 2, 3, 4 tokens) and regression (block_size_rel).
     """
     
     def __init__(self, input_dim=30, hidden_dims=[256, 128, 64], num_classes=None):
@@ -414,7 +352,7 @@ def validate(model, dataloader, criterion, device, use_classification=False):
         
         accuracy = accuracy_score(all_labels, all_preds)
         precision, recall, f1, _ = precision_recall_fscore_support(
-            all_labels, all_preds, average='binary', zero_division=0
+            all_labels, all_preds, average='weighted', zero_division=0
         )
         
         # Class distribution
@@ -460,14 +398,15 @@ def main():
     # Configuration
     CONFIG = {
         # Data config
-        'data_path': 'data/sft_training_samples_multi_greedy_parallel_2tok_0_to_8k.csv',  # CSV with 30 XGBoost features
-        'num_questions': 1,  # Number of questions to use (None = use all)
-        'val_split': 0.1,  # 10% for validation
+        'data_path': 'data/sft_training_samples_multi_greedy_parallel.csv',  # CSV with 30 XGBoost features
+        'num_questions': None,  # Number of questions to use (None = use all)
+        'val_split': 0.15,  # 10% for validation
+        'test_split': 0.15,  # 20% for test
         
         # Model config
         'hidden_dims': [256, 128, 64],  # MLP hidden layer dimensions
-        'use_classification': True,  # True = binary classification (1 vs 2 tokens), False = regression
-        'num_classes': 2,  # Binary classification: class 0 = 1 token, class 1 = 2 tokens
+        'use_classification': True,  # True = 4-class classification (1, 2, 3, 4 tokens), False = regression
+        'num_classes': 4,  # 4-class classification: class 0 = 1 token, class 1 = 2 tokens, class 2 = 3 tokens, class 3 = 4 tokens
         
         # Training config
         'batch_size': 1,  # Larger batch size for feature-only model (no GPU memory for transformer)
@@ -476,7 +415,7 @@ def main():
         
         # Optimizer config
         'learning_rate': 1e-3,  # Higher LR for simple MLP
-        'weight_decay': 0.0,  # L2 regularization for AdamW (0.0 = no regularization for overfit test)
+        'weight_decay': 0.1,  # L2 regularization for AdamW (0.0 = no regularization for overfit test)
         
         # System config
         'checkpoint_dir': 'checkpoints/scheduler_head_features',
@@ -515,7 +454,7 @@ def main():
     print(f"✅ Model created: {total_params:,} parameters")
     if use_classification:
         print(f"   Architecture: 30 → {' → '.join(map(str, CONFIG['hidden_dims']))} → {num_classes} (classification)")
-        print(f"   Task: Binary classification (class 0 = 1 token, class 1 = 2 tokens)")
+        print(f"   Task: 4-class classification (class 0 = 1 token, class 1 = 2 tokens, class 2 = 3 tokens, class 3 = 4 tokens)")
     else:
         print(f"   Architecture: 30 → {' → '.join(map(str, CONFIG['hidden_dims']))} → 1 (regression)")
         print(f"   Task: Regression (predict block_size_rel)")
@@ -523,17 +462,19 @@ def main():
     # 2. Load dataset with question-level split (to avoid data leakage)
     print("\n[2/5] Loading dataset...")
     
-    # Split by question to avoid data leakage
-    train_indices, val_indices = split_by_question(
+    # Split by question to avoid data leakage (train/val/test)
+    train_indices, val_indices, test_indices = split_by_question(
         CONFIG['data_path'],
         val_split=CONFIG['val_split'],
+        test_split=CONFIG['test_split'],
         num_questions=CONFIG['num_questions'],
         seed=CONFIG['seed']
     )
     
-    # Create train and val datasets
+    # Create train, val, and test datasets
     train_dataset = SchedulerDataset(CONFIG['data_path'], sample_indices=train_indices, use_classification=use_classification)
     val_dataset = SchedulerDataset(CONFIG['data_path'], sample_indices=val_indices, use_classification=use_classification)
+    test_dataset = SchedulerDataset(CONFIG['data_path'], sample_indices=test_indices, use_classification=use_classification)
     
     # Print first sample for inspection
     if len(train_dataset) > 0:
@@ -559,7 +500,14 @@ def main():
         collate_fn=collate_fn,
         num_workers=0
     )
-    print(f"✅ Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=CONFIG['batch_size'],
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=0
+    )
+    print(f"✅ Train batches: {len(train_loader)}, Val batches: {len(val_loader)}, Test batches: {len(test_loader)}")
     print(f"   Gradient updates per epoch: {len(train_loader)}")
     print(f"   Total updates for {CONFIG['num_epochs']} epochs: {len(train_loader) * CONFIG['num_epochs']}")
     
@@ -615,7 +563,6 @@ def main():
             print(f"  Val Recall:    {val_metrics['recall']:.4f}")
             print(f"  Val F1:        {val_metrics['f1']:.4f}")
             print(f"  Val Pred Dist: {val_metrics['class_distribution']}")
-            print(f"  [XGBoost baseline: Acc=0.75, F1=0.XX]")
         else:
             # Regression metrics
             print(f"  Val MSE:    {val_metrics['mse']:.4f} (RMSE: {np.sqrt(val_metrics['mse']):.4f})")
@@ -679,14 +626,130 @@ def main():
     print(f"📊 Best Results (Epoch {best_epoch}):")
     print(f"   Train Loss: {best_train_loss:.4f}")
     print(f"   Val Loss:   {best_val_loss:.4f}")
-    print(f"\n⏱️  TIMING REPORT:")
+    
+    # ========================================
+    # Final Evaluation on Train/Val/Test Sets
+    # ========================================
+    print("\n" + "="*80)
+    print("📈 FINAL EVALUATION ON ALL SPLITS")
+    print("="*80)
+    
+    # Load best model
+    print(f"\n🔄 Loading best model (Epoch {best_epoch})...")
+    best_path = os.path.join(CONFIG['checkpoint_dir'], 'mlp_best.pt')
+    checkpoint = torch.load(best_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    print(f"✅ Best model loaded")
+    
+    # Helper function to collect predictions and labels
+    def collect_predictions(dataloader):
+        all_labels = []
+        all_preds = []
+        all_probs = []
+        
+        with torch.no_grad():
+            for batch in dataloader:
+                features = batch['features'].to(device)
+                labels = batch['labels'].to(device)
+                
+                outputs = model(features)  # [batch_size, num_classes] or [batch_size]
+                
+                if use_classification:
+                    labels_long = labels.long()
+                    predicted_classes = torch.argmax(outputs, dim=1)  # [batch_size]
+                    probs = torch.softmax(outputs, dim=1)  # [batch_size, num_classes]
+                    
+                    all_labels.extend(labels_long.cpu().numpy().tolist())
+                    all_preds.extend(predicted_classes.cpu().numpy().tolist())
+                    all_probs.extend(probs.cpu().numpy())
+                else:
+                    all_labels.extend(labels.cpu().numpy().tolist())
+                    all_preds.extend(outputs.cpu().numpy().tolist())
+        
+        all_labels = np.array(all_labels)
+        all_preds = np.array(all_preds)
+        if use_classification:
+            all_probs = np.array(all_probs)
+        else:
+            all_probs = None
+        
+        return all_labels, all_preds, all_probs
+    
+    # Evaluate on train, val, and test sets
+    print("\n🔍 Evaluating on train set...")
+    y_train_true, y_train_pred, y_train_probs = collect_predictions(train_loader)
+    train_results = evaluate_classifier(
+        y_train_true, y_train_pred, y_train_probs,
+        num_classes=num_classes, split_name="Train"
+    )
+    
+    print("🔍 Evaluating on val set...")
+    y_val_true, y_val_pred, y_val_probs = collect_predictions(val_loader)
+    val_results = evaluate_classifier(
+        y_val_true, y_val_pred, y_val_probs,
+        num_classes=num_classes, split_name="Val"
+    )
+    
+    print("🔍 Evaluating on test set...")
+    y_test_true, y_test_pred, y_test_probs = collect_predictions(test_loader)
+    test_results = evaluate_classifier(
+        y_test_true, y_test_pred, y_test_probs,
+        num_classes=num_classes, split_name="Test"
+    )
+    
+    # Print comprehensive metrics summary (same format as XGBoost)
+    print_metrics_summary(
+        train_results, val_results, test_results,
+        decision_threshold=0.5,
+        model_name="MLP"
+    )
+    
+    # Plot confusion matrix and PR curve
+    if use_classification:
+        # Create output directory
+        os.makedirs('./output', exist_ok=True)
+        
+        # Plot confusion matrix (test set)
+        plot_confusion_matrix(
+            y_test_true, y_test_pred, num_classes,
+            save_path="./output/mlp_confusion_matrix.png"
+        )
+        
+        # Plot PR curve for binary classification
+        if num_classes == 2:
+            plot_pr_curve(
+                y_test_true, y_test_probs[:, 0],
+                save_path="./output/mlp_pr_curve.png"
+            )
+    
+    print("\n⏱️  TIMING REPORT:")
     print(f"   Epochs completed: {actual_epochs}/{CONFIG['num_epochs']}")
     print(f"   Total training time: {total_time:.1f}s ({total_time/60:.1f}m)")
     print(f"   Average time per epoch: {avg_epoch_time:.1f}s")
     print(f"   Training samples: {len(train_loader.dataset)}")
     print(f"   Throughput: {len(train_loader.dataset) * actual_epochs / total_time:.1f} samples/sec")
     print(f"💾 Checkpoints saved in: {CONFIG['checkpoint_dir']}")
-    print("="*60)
+    
+    # Comparison with XGBoost baseline
+    print("\n" + "="*80)
+    print("📊 COMPARISON WITH XGBOOST BASELINE")
+    print("="*80)
+    print(f"MLP Test Accuracy:     {test_results['accuracy']:.3f} ({100*test_results['accuracy']:.1f}%)")
+    print(f"XGBoost Test Accuracy: 0.668 (66.8%)  ← From output2.log")
+    print()
+    if test_results['accuracy'] > 0.668:
+        improvement = (test_results['accuracy'] - 0.668) / 0.668 * 100
+        print(f"✅ MLP is {improvement:.1f}% better than XGBoost!")
+    elif test_results['accuracy'] < 0.668:
+        degradation = (0.668 - test_results['accuracy']) / 0.668 * 100
+        print(f"⚠️  MLP is {degradation:.1f}% worse than XGBoost")
+    else:
+        print(f"🟰 MLP matches XGBoost performance")
+    print()
+    print(f"Both models use the same 30 XGBoost features")
+    print(f"Next step: Add LLM hidden states to MLP to improve performance")
+    print("="*80)
     
     # Save loss history to JSON
     loss_history = {
