@@ -6,12 +6,12 @@ set -e
 
 # Configuration
 PARTITION="coc-gpu,ice-gpu"
-QOS="coc-ice"     # coc-grade or coc-ice
-NUM_GPUS=1        # Number of GPUs to request (1, 2, 4, etc.)
-CPUS=2            # Recommended: 2 per GPU
+QOS_OPTIONS=("coc-ice" "coc-grade")  # Try both QOS for each GPU type
+NUM_GPUS=1                           # Number of GPUs to request (1, 2, 4, etc.)
+CPUS=2
 MEM="128G"
 TIME="16:00:00"
-WAIT_TIME=30  # seconds to wait for each GPU type
+WAIT_TIME=20  # seconds to wait for each GPU type + QOS combo
 
 # GPU types in order of preference (best to worst)
 # Note: NUM_GPUS will be appended to each type
@@ -42,29 +42,31 @@ echo "GPU Allocation Script"
 echo "========================================="
 echo "Configuration:"
 echo "  Partition: $PARTITION"
-echo "  QOS: $QOS"
+echo "  QOS Options: ${QOS_OPTIONS[@]}"
 echo "  GPUs: $NUM_GPUS"
 echo "  CPUs: $CPUS"
 echo "  Memory: $MEM"
 echo "  Time: $TIME"
-echo "  Wait per GPU: ${WAIT_TIME}s"
+echo "  Wait per attempt: ${WAIT_TIME}s"
 echo "========================================="
 echo ""
 
-# Function to try allocating a GPU
+# Function to try allocating a GPU with a specific QOS
 try_allocate() {
     local gpu_type=$1
     local gpu_name=$2
+    local qos=$3
     local gpu_spec="${gpu_type}:${NUM_GPUS}"
     
-    echo "🔍 Trying ${NUM_GPUS}x ${gpu_name}..."
-    echo "   Command: salloc -p $PARTITION --qos=$QOS --gres=gpu:${gpu_spec} --ntasks=1 --cpus-per-task=$CPUS --mem=$MEM -t $TIME"
+    echo "🔍 Trying ${NUM_GPUS}x ${gpu_name} with QOS: ${qos}..."
+    echo "   Command: salloc -p $PARTITION --qos=$qos --gres=gpu:${gpu_spec} --ntasks=1 --cpus-per-task=$CPUS --mem=$MEM -t $TIME"
+    QOS_FLAG="--qos=$qos"
     
     # Get count of current jobs before submission
     JOBS_BEFORE=$(squeue -u $USER -h | wc -l)
     
     # Start allocation in background
-    salloc -p $PARTITION --qos=$QOS --gres=gpu:${gpu_spec} --ntasks=1 --cpus-per-task=$CPUS --mem=$MEM -t $TIME &
+    salloc -p $PARTITION $QOS_FLAG --gres=gpu:${gpu_spec} --ntasks=1 --cpus-per-task=$CPUS --mem=$MEM -t $TIME &
     SALLOC_PID=$!
     
     # Wait for job to appear in queue
@@ -103,6 +105,7 @@ try_allocate() {
             echo "🎉 GPU ALLOCATED!"
             echo "========================================="
             echo "GPUs: ${NUM_GPUS}x ${gpu_name}"
+            echo "QOS: ${qos}"
             echo "Partition: $PARTITION"
             echo ""
             echo "Starting interactive session on GPU node..."
@@ -113,7 +116,7 @@ try_allocate() {
             
             # Run salloc in foreground - this gives you a direct shell on the GPU node
             # No need for srun - you'll be directly on the compute node
-            exec salloc -p $PARTITION --qos=$QOS --gres=gpu:${gpu_spec} --ntasks=1 --cpus-per-task=$CPUS --mem=$MEM -t $TIME
+            exec salloc -p $PARTITION $QOS_FLAG --gres=gpu:${gpu_spec} --ntasks=1 --cpus-per-task=$CPUS --mem=$MEM -t $TIME
             
             # This line won't be reached due to exec
             exit 0
@@ -140,16 +143,18 @@ try_allocate() {
     return 1
 }
 
-# Try each GPU type
+# Try each GPU type with each QOS
 for i in "${!GPU_TYPES[@]}"; do
     gpu_type="${GPU_TYPES[$i]}"
     gpu_name="${GPU_NAMES[$i]}"
     
-    if try_allocate "$gpu_type" "$gpu_name"; then
-        exit 0
-    fi
-    
-    echo ""
+    # Try each QOS for this GPU type
+    for qos in "${QOS_OPTIONS[@]}"; do
+        if try_allocate "$gpu_type" "$gpu_name" "$qos"; then
+            exit 0
+        fi
+        echo ""
+    done
 done
 
 # If we get here, nothing worked
