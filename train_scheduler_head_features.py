@@ -399,9 +399,9 @@ def main():
     CONFIG = {
         # Data config
         'data_path': 'data/sft_training_samples_multi_greedy_parallel.csv',  # CSV with 30 XGBoost features
-        'num_questions': None,  # Number of questions to use (None = use all)
-        'val_split': 0.15,  # 10% for validation
-        'test_split': 0.15,  # 20% for test
+        'num_questions': None,  # Number of questions to use (None = use all, 1 = overfit test)
+        'val_split': 0.15,  # 15% for validation
+        'test_split': 0.15,  # 15% for test
         
         # Model config
         'hidden_dims': [256, 128, 64],  # MLP hidden layer dimensions
@@ -409,9 +409,10 @@ def main():
         'num_classes': 4,  # 4-class classification: class 0 = 1 token, class 1 = 2 tokens, class 2 = 3 tokens, class 3 = 4 tokens
         
         # Training config
-        'batch_size': 1,  # Larger batch size for feature-only model (no GPU memory for transformer)
+        'batch_size': 32,  # Batch size for training (1 = no batching, 32 = faster but more memory)
         'num_epochs': 20,  # More epochs since it's fast without transformer
         'early_stopping_patience': 5,  # Be patient
+        'use_class_weights': True,  # Balance classes (CRITICAL for imbalanced data!)
         
         # Optimizer config
         'learning_rate': 1e-3,  # Higher LR for simple MLP
@@ -520,9 +521,33 @@ def main():
     )
     
     if use_classification:
-        criterion = nn.CrossEntropyLoss()  # Cross-entropy for classification
-        print(f"✅ Optimizer: AdamW (lr={CONFIG['learning_rate']}, weight_decay={CONFIG['weight_decay']})")
-        print(f"✅ Loss function: CrossEntropyLoss (classification)")
+        # Optionally compute class weights to handle imbalance (same as XGBoost)
+        if CONFIG.get('use_class_weights', True):
+            from sklearn.utils.class_weight import compute_class_weight
+            
+            # Get class distribution from training set
+            train_labels = np.array([train_dataset[i]['label'] for i in range(len(train_dataset))])
+            unique_classes = np.arange(num_classes)
+            
+            # Compute balanced class weights
+            class_weights_np = compute_class_weight('balanced', classes=unique_classes, y=train_labels)
+            class_weights = torch.FloatTensor(class_weights_np).to(device)
+            
+            # Show class weights
+            print(f"\n⚖️  Computing class weights for imbalanced data...")
+            for class_idx in range(num_classes):
+                block_size = class_idx + 1  # class_to_blocksize
+                token_str = f"{block_size} token" + ("s" if block_size > 1 else "")
+                print(f"  Class {class_idx} ({token_str:>8}): weight = {class_weights_np[class_idx]:.2f}")
+            
+            criterion = nn.CrossEntropyLoss(weight=class_weights)  # Cross-entropy with class weights
+            print(f"\n✅ Optimizer: AdamW (lr={CONFIG['learning_rate']}, weight_decay={CONFIG['weight_decay']})")
+            print(f"✅ Loss function: CrossEntropyLoss (classification with class weights)")
+        else:
+            print(f"\n⚠️  Class weights disabled - training with uniform weights")
+            criterion = nn.CrossEntropyLoss()  # Cross-entropy without class weights
+            print(f"✅ Optimizer: AdamW (lr={CONFIG['learning_rate']}, weight_decay={CONFIG['weight_decay']})")
+            print(f"✅ Loss function: CrossEntropyLoss (classification, NO class weights)")
     else:
         criterion = nn.MSELoss()  # Mean Squared Error for regression
         print(f"✅ Optimizer: AdamW (lr={CONFIG['learning_rate']}, weight_decay={CONFIG['weight_decay']})")
