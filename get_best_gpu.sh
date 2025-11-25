@@ -6,9 +6,9 @@ set -e
 
 # Configuration
 PARTITION="coc-gpu,ice-gpu"
-QOS="coc-ice"     # Changed from coc-grade to coc-ice for separate quota
+QOS="coc-ice"     # coc-grade or coc-ice
 NUM_GPUS=1        # Number of GPUs to request (1, 2, 4, etc.)
-CPUS=2
+CPUS=2            # Recommended: 2 per GPU
 MEM="128G"
 TIME="16:00:00"
 WAIT_TIME=30  # seconds to wait for each GPU type
