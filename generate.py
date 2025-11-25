@@ -160,6 +160,11 @@ def predict_block_size_xgboost(
         # Extract features from logits (or use baseline strategy)
         from inference import predict_block_size
         
+        # Hash the prompt tokens to create question-specific seed for random baselines
+        # This makes random patterns vary by question but stay deterministic across runs
+        prompt_tokens = x[0, :gen_start].cpu().tolist()  # Extract prompt tokens
+        question_hash = hash(tuple(prompt_tokens)) & 0x7FFFFFFF  # Positive int hash
+        
         # Skip expensive feature extraction if using baseline strategy
         if baseline_strategy is None:
             (initial_confidence, initial_entropy, initial_shannon_entropy, 
@@ -190,7 +195,9 @@ def predict_block_size_xgboost(
             gen_length=gen_length,
             use_regression=use_regression,
             remaining_length=remaining_tokens,
-            baseline_strategy=baseline_strategy
+            max_block_size=max_block_size,
+            baseline_strategy=baseline_strategy,
+            question_hash=question_hash
         )
         block_size_raw = block_size_rel * remaining_tokens
         block_size = int(round(block_size_raw))
@@ -424,7 +431,8 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         scheduler_type: Type of scheduler to use. 'xgboost' or 'neural' (default: 'xgboost').
                         'xgboost': Uses XGBoost model with extracted features
                         'neural': Uses trained scheduler head in the model
-        baseline_strategy: Baseline mode for testing. None (use scheduler), 'always_1', 'always_2', 'random_50_50' (default: None).
+        baseline_strategy: Baseline mode for testing. None (use scheduler), 'always_1', 'always_2', 'always_4', 'random_uniform' (default: None).
+                           'random_uniform' splits equally across 1 to max_block_size (e.g., 25-25-25-25 for max=4).
     '''
 
     # Create x = prompt + completion 

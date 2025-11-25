@@ -2137,7 +2137,7 @@ def load_scheduler(model_path, use_regression=True):
     return scheduler
 
 
-def predict_block_size(scheduler, features, gen_length, use_regression=True, remaining_length=None, baseline_strategy=None):
+def predict_block_size(scheduler, features, gen_length, use_regression=True, remaining_length=None, baseline_strategy=None, max_block_size=10, question_hash=None):
     """
     Predict relative block size for current position using XGBoost scheduler.
     
@@ -2147,7 +2147,9 @@ def predict_block_size(scheduler, features, gen_length, use_regression=True, rem
         gen_length: Total generation length (for regression mode)
         use_regression: If True, scheduler outputs continuous value; else class index
         remaining_length: Remaining tokens to generate (for classification mode)
-        baseline_strategy: Baseline mode for testing. None (use scheduler), 'always_1', 'always_2', 'random_50_50'
+        baseline_strategy: Baseline mode for testing. None (use scheduler), 'always_1', 'always_2', 'always_4', 'random_uniform'
+        max_block_size: Maximum block size for capping and random_uniform baseline (default: 10)
+        question_hash: Hash of prompt tokens for question-specific randomness (for random_uniform baseline)
     
     Returns:
         block_size_rel (float): Predicted relative block size (0.0 to 1.0)
@@ -2162,14 +2164,21 @@ def predict_block_size(scheduler, features, gen_length, use_regression=True, rem
             divisor = gen_length
         return 1.0 / divisor
     elif baseline_strategy == 'always_2':
-        # Always predict block_size=2 (aggressive baseline)
+        # Always predict block_size=2
         divisor = remaining_length if remaining_length is not None else gen_length
         if divisor <= 0:
             divisor = gen_length
         return 2.0 / divisor
-    elif baseline_strategy == 'random_50_50':
-        # Random 50/50 between block_size=1 and block_size=2 (deterministic)
-        # Calculate current position from remaining_length
+    elif baseline_strategy == 'always_4':
+        # Always predict block_size=4
+        divisor = remaining_length if remaining_length is not None else gen_length
+        if divisor <= 0:
+            divisor = gen_length
+        return 4.0 / divisor
+    elif baseline_strategy == 'random_uniform':
+        # Random uniform distribution across 1 to max_block_size (deterministic)
+        # For max_block_size=2: 50% 1-token, 50% 2-token
+        # For max_block_size=4: 25% each for 1, 2, 3, 4 tokens
         divisor = remaining_length if remaining_length is not None else gen_length
         if divisor <= 0:
             divisor = gen_length
@@ -2177,11 +2186,21 @@ def predict_block_size(scheduler, features, gen_length, use_regression=True, rem
         # Derive curr_pos from remaining_length
         curr_pos = gen_length - (remaining_length if remaining_length is not None else gen_length)
         
-        # Use curr_pos as seed for reproducibility (each position gets unique seed)
-        # Add 1 to avoid seed=0 (which always produces the same result)
-        seed = (curr_pos + 1) * 31337  # Prime number multiplier for better distribution
+        # Create question-specific seed that varies by position
+        # This makes each question get a unique random pattern, but deterministic across runs
+        if question_hash is not None:
+            # Hash of prompt tokens makes it question-specific
+            # curr_pos makes it position-specific within the question
+            # Use modulo to keep seed within valid range [0, 2^32 - 1]
+            seed = (question_hash * 1000 + curr_pos) % (2**32)
+        else:
+            # Fallback: only position-based (original behavior)
+            seed = (curr_pos + 1) * 31337
+        
         rng = np.random.RandomState(seed)
-        predicted_block_size = rng.choice([1, 2])  # 50/50 random choice
+        
+        # Uniformly choose from 1 to max_block_size
+        predicted_block_size = rng.choice(range(1, max_block_size + 1))
         
         return float(predicted_block_size) / divisor
     
@@ -2476,9 +2495,11 @@ def run_inference_with_scheduler(
         if baseline_strategy == 'always_1':
             print("   Always predict block_size=1 (conservative, ~100% acc, 1.0x speedup)")
         elif baseline_strategy == 'always_2':
-            print("   Always predict block_size=2 (aggressive, upper bound speedup)")
-        elif baseline_strategy == 'random_50_50':
-            print("   Random 50/50 between 1 and 2 (deterministic, untrained baseline)")
+            print("   Always predict block_size=2 (aggressive, higher speedup)")
+        elif baseline_strategy == 'always_4':
+            print("   Always predict block_size=4 (very aggressive, upper bound speedup)")
+        elif baseline_strategy == 'random_uniform':
+            print(f"   Random uniform across 1 to {max_block_size} tokens (deterministic, untrained baseline)")
     elif scheduler_type == 'neural':
         print("🚀 CHARLES: Neural Scheduler Head-Guided Dynamic Block Size Inference")
     elif scheduler_type == 'xgboost':
