@@ -38,7 +38,7 @@ from scheduler_utils import (
 
 
 class SchedulerDataset(Dataset):
-    """Dataset for training the scheduler head with XGBoost features."""
+    """Dataset for training the scheduler head with XGBoost features (and optionally hidden states)."""
     
     # XGBoost features (30 total) - same as train_scheduler.py
     FEATURE_COLS = [
@@ -54,27 +54,43 @@ class SchedulerDataset(Dataset):
         'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
     ]
     
-    def __init__(self, csv_path: str, sample_indices: list = None, use_classification: bool = True):
+    def __init__(self, data_path: str, sample_indices: list = None, use_classification: bool = True, 
+                 data_format: str = 'csv', model=None, use_hidden_states: bool = False):
         """
-        Load training samples from CSV.
-        
-        Each row contains:
-        - 30 XGBoost features (position, confidence, entropy stats)
-        - block_size: target label (1 or 2 tokens for classification)
+        Load training samples from CSV or JSON.
         
         Args:
-            csv_path: Path to CSV file
-            sample_indices: List of row indices to use (for train/val split)
-            use_classification: If True, convert block_size to class labels (0=1 token, 1=2 tokens)
+            data_path: Path to CSV or JSON file
+            sample_indices: List of indices to use (for train/val split)
+            use_classification: If True, convert block_size to class labels
+            data_format: 'csv' or 'json'
+            model: LLaDA model for hidden state extraction (only if use_hidden_states=True)
+            use_hidden_states: If True, extract hidden states from model
         
         We extract:
-        - features: 30-dimensional feature vector (same as XGBoost)
+        - features: 30-dimensional feature vector (XGBoost features)
+        - hidden_states: 2048-dimensional if use_hidden_states=True
         - labels: class labels if classification, else block_size_rel
         """
-        # Load CSV
+        self.use_hidden_states = use_hidden_states
+        self.model = model
+        self.use_classification = use_classification
+        
+        if data_format == 'csv':
+            self._load_csv(data_path, sample_indices)
+        elif data_format == 'json':
+            self._load_json(data_path, sample_indices)
+        else:
+            raise ValueError(f"Unsupported data_format: {data_format}")
+        
+        # Validate
+        if use_hidden_states and model is None:
+            raise ValueError("model must be provided when use_hidden_states=True")
+    
+    def _load_csv(self, csv_path, sample_indices):
+        """Load data from CSV format."""
         df = pd.read_csv(csv_path)
         
-        # Select subset if sample_indices provided
         if sample_indices is not None:
             df = df.iloc[sample_indices].reset_index(drop=True)
         
@@ -83,21 +99,20 @@ class SchedulerDataset(Dataset):
         if missing_cols:
             raise ValueError(f"Missing feature columns in CSV: {missing_cols}")
         
-        # Extract features and labels
-        self.features = df[self.FEATURE_COLS].values  # shape: (num_samples, 30)
+        # Extract features
+        self.features = df[self.FEATURE_COLS].values  # (num_samples, 30)
         
-        if use_classification:
-            # Convert block_size to class labels: 0 = 1 token, 1 = 2 tokens, 2 = 3 tokens, 3 = 4 tokens
+        # Extract labels
+        if self.use_classification:
             block_sizes = df['block_size'].values
-            self.labels = block_sizes - 1  # block_size=1 → class 0, block_size=2 → class 1, etc.
+            self.labels = block_sizes - 1  # class 0-3 for 1-4 tokens
             print(f"✅ Using 4-class classification (1, 2, 3, 4 tokens)")
             print(f"   Class distribution: {np.bincount(self.labels.astype(int))}")
         else:
-            # Use block_size_rel for regression
-            self.labels = df['block_size_rel'].values  # shape: (num_samples,)
+            self.labels = df['block_size_rel'].values
             print(f"✅ Using regression (block_size_rel)")
         
-        # Check for missing values and impute with median (same as XGBoost)
+        # Impute missing values
         missing_count = pd.isna(self.features).sum()
         if missing_count > 0:
             print(f"⚠️  Found {missing_count} missing values, imputing with column medians...")
@@ -105,8 +120,127 @@ class SchedulerDataset(Dataset):
             imputer = SimpleImputer(strategy='median')
             self.features = imputer.fit_transform(self.features)
         
+        # CSV doesn't have intermediate_x, so can't use hidden states
+        if self.use_hidden_states:
+            raise ValueError("CSV format doesn't support hidden states (no intermediate_x). Use JSON format.")
+        
+        self.input_ids = None
+        self.token_positions = None
+        
         print(f"✅ Loaded {len(self.features)} samples from {csv_path}")
         print(f"   Features shape: {self.features.shape} (30 XGBoost features)")
+    
+    def _load_json(self, json_path, sample_indices):
+        """
+        Load data from JSON format.
+        
+        Strategy: Load intermediate_x from JSON, but features from CSV (more complete).
+        This is a hybrid approach since JSON has incomplete features.
+        """
+        import json
+        
+        # Determine CSV path from JSON path
+        # Use the FULL CSV (not _4tok version) as it has all 30 features
+        csv_path = json_path.replace('.json', '.csv')
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"CSV not found: {csv_path}")
+        
+        print(f"🔀 Hybrid loading: features from CSV, intermediate_x from JSON")
+        print(f"   CSV: {csv_path}")
+        print(f"   JSON: {json_path}")
+        
+        # Load both files
+        with open(json_path, 'r') as f:
+            json_samples = json.load(f)
+        
+        df_csv = pd.read_csv(csv_path)
+        
+        # Build mapping: (question_id, position) -> json_sample with intermediate_x
+        json_map = {}
+        for sample in json_samples:
+            q_id = sample.get('question_id', -1)
+            # Position from features[0][2]
+            pos = sample['features'][0][2] if sample['features'] else 0
+            json_map[(q_id, pos)] = sample
+        
+        print(f"   JSON samples: {len(json_samples)} (questions: {len(set(s.get('question_id', -1) for s in json_samples))})")
+        print(f"   CSV samples: {len(df_csv)}")
+        
+        # Filter CSV to only samples that have matching JSON entries
+        self.features = []
+        self.labels = []
+        self.input_ids = []
+        self.token_positions = []
+        matched_indices = []
+        
+        # Check which features are actually available in CSV
+        available_features = [col for col in self.FEATURE_COLS if col in df_csv.columns]
+        missing_features = [col for col in self.FEATURE_COLS if col not in df_csv.columns]
+        
+        if missing_features:
+            print(f"⚠️  CSV missing {len(missing_features)}/{len(self.FEATURE_COLS)} features: {missing_features[:5]}...")
+            print(f"   Using {len(available_features)} available features")
+        
+        for idx, row in df_csv.iterrows():
+            # Skip if not in sample_indices
+            if sample_indices is not None and idx not in sample_indices:
+                continue
+            
+            q_id = row.get('question_id', -1)
+            pos = row.get('position', 0)
+            
+            # Check if we have matching JSON entry
+            if (q_id, pos) in json_map:
+                # Extract available features from CSV, fill missing with 0.0
+                xgb_features = []
+                for col in self.FEATURE_COLS:
+                    if col in df_csv.columns:
+                        xgb_features.append(row[col])
+                    else:
+                        xgb_features.append(0.0)  # Fill missing features with 0
+                self.features.append(xgb_features)
+                
+                # Extract label from CSV
+                if self.use_classification:
+                    block_size = row['block_size']
+                    self.labels.append(block_size - 1)
+                else:
+                    self.labels.append(row['block_size_rel'])
+                
+                # Extract intermediate_x from JSON
+                if self.use_hidden_states:
+                    json_sample = json_map[(q_id, pos)]
+                    # intermediate_x is [1, seq_len], squeeze to [seq_len]
+                    self.input_ids.append(json_sample['intermediate_x'][0])
+                    self.token_positions.append(int(pos))
+                
+                matched_indices.append(idx)
+        
+        if len(self.features) == 0:
+            raise ValueError(f"No matching samples found between CSV and JSON! Check question_id alignment.")
+        
+        self.features = np.array(self.features, dtype=np.float32)
+        self.labels = np.array(self.labels, dtype=np.float32)
+        
+        # Check for missing values and impute
+        missing_count = pd.isna(self.features).sum()
+        if missing_count > 0:
+            print(f"⚠️  Found {missing_count} missing values, imputing with column medians...")
+            from sklearn.impute import SimpleImputer
+            imputer = SimpleImputer(strategy='median')
+            self.features = imputer.fit_transform(self.features)
+        
+        if self.use_classification:
+            print(f"✅ Using 4-class classification (1, 2, 3, 4 tokens)")
+            print(f"   Class distribution: {np.bincount(self.labels.astype(int))}")
+        else:
+            print(f"✅ Using regression (block_size_rel)")
+        
+        print(f"✅ Loaded {len(self.features)} matched samples (CSV features + JSON intermediate_x)")
+        print(f"   Features shape: {self.features.shape} (30 XGBoost features from CSV)")
+        if self.use_hidden_states:
+            print(f"   intermediate_x loaded from JSON for hidden state extraction")
+    
     
     def __len__(self):
         return len(self.features)
@@ -117,44 +251,220 @@ class SchedulerDataset(Dataset):
         
         Returns:
             dict with:
-            - features: (30,) numpy array of XGBoost features
-            - label: float block_size_rel in [0, 1]
+            - features: (30,) or (2078,) numpy array
+            - label: scalar
+            - input_ids: (seq_len,) if use_hidden_states (for collate_fn)
+            - token_position: int if use_hidden_states
         """
-        return {
+        result = {
             'features': self.features[idx],  # (30,) array
             'label': self.labels[idx]  # scalar
         }
+        
+        # Add data needed for hidden state extraction
+        if self.use_hidden_states:
+            result['input_ids'] = self.input_ids[idx]  # list of token IDs
+            result['token_position'] = self.token_positions[idx]  # int
+        
+        return result
 
 
-# split_by_question is now imported from scheduler_utils
+# split_by_question is imported from scheduler_utils (CSV only)
+# We add a wrapper to support JSON
 
-
-def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
+def split_by_question_flexible(data_path: str, data_format: str, val_split: float, 
+                                test_split: float = None, num_questions: int = None, seed: int = 42):
     """
-    Collate batch samples (no padding needed for fixed-size features).
+    Split by question for both CSV and JSON formats.
     
     Args:
-        batch: List of dicts with 'features' (30,) and 'label' (scalar)
+        data_path: Path to CSV or JSON file
+        data_format: 'csv' or 'json'
+        val_split: Fraction for validation
+        test_split: Fraction for test (optional)
+        num_questions: Limit to N questions
+        seed: Random seed
     
     Returns:
-        Dict with batched tensors:
-        - features: [batch_size, 30] float tensor
-        - labels: [batch_size] float tensor
+        (train_indices, val_indices, test_indices) if test_split provided
+        (train_indices, val_indices) otherwise
     """
-    batch_size = len(batch)
+    if data_format == 'csv':
+        # Use the scheduler_utils version for CSV
+        return split_by_question(
+            data_path, val_split=val_split, test_split=test_split,
+            num_questions=num_questions, seed=seed
+        )
     
-    # Stack features and labels
-    features = torch.zeros(batch_size, 30, dtype=torch.float32)
-    labels = torch.zeros(batch_size, dtype=torch.float32)
+    elif data_format == 'json':
+        # Handle JSON format
+        import json
+        with open(data_path, 'r') as f:
+            all_samples = json.load(f)
+        
+        # Group samples by question_id
+        question_to_samples = {}
+        for idx, sample in enumerate(all_samples):
+            question_id = sample.get('question_id', idx)
+            if question_id not in question_to_samples:
+                question_to_samples[question_id] = []
+            question_to_samples[question_id].append(idx)
+        
+        # Get sorted question IDs
+        question_ids = sorted(question_to_samples.keys())
+        
+        # Limit to first N questions if specified
+        if num_questions is not None:
+            question_ids = question_ids[:num_questions]
+        
+        print(f"\n📊 Question-Level Split:")
+        print(f"   Total unique questions: {len(question_ids)}")
+        print(f"   Total samples: {sum(len(question_to_samples[q]) for q in question_ids)}")
+        
+        # Shuffle questions
+        rng = random.Random(seed)
+        rng.shuffle(question_ids)
+        
+        # Split questions
+        if len(question_ids) == 1:
+            print(f"   ⚠️  Only 1 question - using same question for all splits (overfit test)")
+            train_question_ids = question_ids
+            val_question_ids = question_ids
+            test_question_ids = question_ids if test_split is not None else []
+        else:
+            if test_split is not None:
+                # Three-way split
+                num_test = max(1, int(len(question_ids) * test_split))
+                num_val = max(1, int(len(question_ids) * val_split))
+                
+                test_question_ids = question_ids[:num_test]
+                val_question_ids = question_ids[num_test:num_test + num_val]
+                train_question_ids = question_ids[num_test + num_val:]
+            else:
+                # Two-way split
+                num_val = max(1, int(len(question_ids) * val_split))
+                val_question_ids = question_ids[:num_val]
+                train_question_ids = question_ids[num_val:]
+                test_question_ids = []
+        
+        # Get sample indices
+        train_indices = []
+        val_indices = []
+        test_indices = []
+        
+        for q_id in train_question_ids:
+            train_indices.extend(question_to_samples[q_id])
+        for q_id in val_question_ids:
+            val_indices.extend(question_to_samples[q_id])
+        for q_id in test_question_ids:
+            test_indices.extend(question_to_samples[q_id])
+        
+        print(f"   Train: {len(train_question_ids)} questions ({len(train_indices)} samples)")
+        print(f"   Val:   {len(val_question_ids)} questions ({len(val_indices)} samples)")
+        if test_split is not None:
+            print(f"   Test:  {len(test_question_ids)} questions ({len(test_indices)} samples)")
+        print(f"   ✅ No data leakage - questions are fully separated")
+        
+        if test_split is not None:
+            return train_indices, val_indices, test_indices
+        else:
+            return train_indices, val_indices
     
-    for i, item in enumerate(batch):
-        features[i] = torch.tensor(item['features'], dtype=torch.float32)
-        labels[i] = item['label']
+    else:
+        raise ValueError(f"Unsupported data_format: {data_format}")
+
+
+def create_collate_fn(model=None, use_hidden_states=False, device='cuda'):
+    """
+    Factory function to create a collate function with optional hidden state extraction.
     
-    return {
-        'features': features,  # [batch_size, 30]
-        'labels': labels  # [batch_size]
-    }
+    Args:
+        model: LLaDA model for hidden state extraction
+        use_hidden_states: Whether to extract hidden states
+        device: Device for model inference
+    
+    Returns:
+        collate_fn function
+    """
+    def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
+        """
+        Collate batch samples with optional hidden state extraction.
+        
+        Args:
+            batch: List of dicts with 'features', 'label', and optionally 'input_ids', 'token_position'
+        
+        Returns:
+            Dict with batched tensors:
+            - features: [batch_size, 30] or [batch_size, 2078] float tensor
+            - labels: [batch_size] float tensor
+        """
+        batch_size = len(batch)
+        
+        # Extract XGBoost features (30-dim)
+        xgb_features = torch.zeros(batch_size, 30, dtype=torch.float32)
+        labels = torch.zeros(batch_size, dtype=torch.float32)
+        
+        for i, item in enumerate(batch):
+            xgb_features[i] = torch.tensor(item['features'], dtype=torch.float32)
+            labels[i] = float(item['label'])  # Convert numpy.float32 to Python float
+        
+        # If using hidden states, extract them dynamically
+        if use_hidden_states and model is not None:
+            # Prepare input_ids with padding
+            input_ids_list = [item['input_ids'] for item in batch]
+            token_positions = [item['token_position'] for item in batch]
+            
+            # Pad sequences to max length in batch
+            max_len = max(len(ids) for ids in input_ids_list)
+            input_ids_padded = []
+            attention_masks = []
+            
+            for ids in input_ids_list:
+                # Pad to max_len
+                padding_length = max_len - len(ids)
+                padded_ids = ids + [0] * padding_length  # Assume 0 is pad token
+                attention_mask = [1] * len(ids) + [0] * padding_length
+                
+                input_ids_padded.append(padded_ids)
+                attention_masks.append(attention_mask)
+            
+            # Convert to tensors
+            input_ids_tensor = torch.tensor(input_ids_padded, dtype=torch.long).to(device)
+            attention_mask_tensor = torch.tensor(attention_masks, dtype=torch.long).to(device)
+            
+            # Extract hidden states from model
+            with torch.no_grad():
+                outputs = model(
+                    input_ids=input_ids_tensor,
+                    attention_mask=attention_mask_tensor,
+                    output_hidden_states=True
+                )
+                # Get last layer hidden states: [batch_size, seq_len, hidden_dim]
+                last_hidden_states = outputs.hidden_states[-1]
+                
+                # Extract hidden state at token_position for each sample
+                hidden_states_batch = []
+                for i, pos in enumerate(token_positions):
+                    # Ensure position is within valid range
+                    pos = min(int(pos), last_hidden_states.shape[1] - 1)
+                    hidden_state = last_hidden_states[i, pos, :]  # [hidden_dim]
+                    hidden_states_batch.append(hidden_state)
+                
+                # Stack: [batch_size, hidden_dim]
+                hidden_states_tensor = torch.stack(hidden_states_batch).cpu()
+            
+            # Concatenate XGBoost features + hidden states: [batch_size, 30 + 2048]
+            features = torch.cat([xgb_features, hidden_states_tensor], dim=1)
+        else:
+            # Use only XGBoost features
+            features = xgb_features
+        
+        return {
+            'features': features,  # [batch_size, 30] or [batch_size, 2078]
+            'labels': labels  # [batch_size]
+        }
+    
+    return collate_fn
 
 
 class FeatureOnlySchedulerMLP(nn.Module):
@@ -398,7 +708,8 @@ def main():
     # Configuration
     CONFIG = {
         # Data config
-        'data_path': 'data/sft_training_samples_multi_greedy_parallel.csv',  # CSV with 30 XGBoost features
+        'data_format': 'json',  # 'csv' or 'json' (JSON required for hidden states)
+        'data_path': 'data/sft_training_samples_multi_greedy_parallel.json',  # Path to data
         'num_questions': None,  # Number of questions to use (None = use all, 1 = overfit test)
         'val_split': 0.15,  # 15% for validation
         'test_split': 0.15,  # 15% for test
@@ -407,9 +718,10 @@ def main():
         'hidden_dims': [256, 128, 64],  # MLP hidden layer dimensions
         'use_classification': True,  # True = 4-class classification (1, 2, 3, 4 tokens), False = regression
         'num_classes': 4,  # 4-class classification: class 0 = 1 token, class 1 = 2 tokens, class 2 = 3 tokens, class 3 = 4 tokens
+        'use_hidden_states': True,  # ⭐ NEW: Use LLaDA hidden states + XGBoost features (30 + 2048 = 2078 dim)
         
         # Training config
-        'batch_size': 32,  # Batch size for training (1 = no batching, 32 = faster but more memory)
+        'batch_size': 8,  # Smaller batch when using hidden states (more memory)
         'num_epochs': 20,  # More epochs since it's fast without transformer
         'early_stopping_patience': 5,  # Be patient
         'use_class_weights': True,  # Balance classes (CRITICAL for imbalanced data!)
@@ -424,9 +736,16 @@ def main():
         'seed': SEED,
     }
     
+    use_hidden_states = CONFIG.get('use_hidden_states', False)
+    data_format = CONFIG.get('data_format', 'csv')
+    
     print("="*60)
-    print("🚀 TRAINING FEATURE-ONLY SCHEDULER MLP")
-    print("   (Using 30 XGBoost features - No Transformer)")
+    if use_hidden_states:
+        print("🚀 TRAINING HYBRID SCHEDULER MLP")
+        print("   (30 XGBoost features + LLaDA hidden states)")
+    else:
+        print("🚀 TRAINING FEATURE-ONLY SCHEDULER MLP")
+        print("   (Using 30 XGBoost features - No Transformer)")
     print("="*60)
     print(f"Configuration:")
     for key, value in CONFIG.items():
@@ -439,33 +758,69 @@ def main():
     device = CONFIG['device']
     print(f"\n💻 Device: {device}")
     
-    # 1. Create feature-only MLP model
-    print("\n[1/5] Creating feature-only MLP...")
+    # 0. Optionally load LLaDA model for hidden state extraction
+    llada_model = None
+    hidden_size = 0
+    if use_hidden_states:
+        print("\n[0/5] Loading LLaDA model for hidden state extraction...")
+        model_config = torch.load('./cache/model_config.pt', weights_only=True)
+        model_args = trl.ModelConfig(
+            model_name_or_path=model_config['model_name_or_path'],
+            trust_remote_code=True,
+            torch_dtype='bfloat16'  # Use bfloat16 for memory efficiency
+        )
+        
+        # Load model (frozen, eval mode)
+        llada_model, tokenizer, _ = load_model(model_args, use_custom=False)
+        llada_model.eval()  # Ensure eval mode
+        
+        # Freeze all parameters
+        for param in llada_model.parameters():
+            param.requires_grad = False
+        
+        # Get actual hidden size from model
+        hidden_size = llada_model.config.hidden_size
+        
+        print(f"✅ LLaDA model loaded (frozen, eval mode)")
+        print(f"   Model: {model_config['model_name_or_path']}")
+        print(f"   Hidden size: {hidden_size}")
+        print(f"   Model will extract hidden states during training")
+    
+    # 1. Create MLP model
+    print("\n[1/5] Creating MLP...")
     use_classification = CONFIG.get('use_classification', False)
     num_classes = CONFIG.get('num_classes', None) if use_classification else None
     
-    model = FeatureOnlySchedulerMLP(
-        input_dim=30,  # 30 XGBoost features
+    # Determine input dimension
+    if use_hidden_states:
+        input_dim = 30 + hidden_size  # XGBoost features + hidden states
+        print(f"   Input dimension: 30 (features) + {hidden_size} (hidden states) = {input_dim}")
+    else:
+        input_dim = 30  # Only XGBoost features
+    
+    mlp_model = FeatureOnlySchedulerMLP(
+        input_dim=input_dim,
         hidden_dims=CONFIG['hidden_dims'],
         num_classes=num_classes
     ).to(device)
     
     # Count parameters
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"✅ Model created: {total_params:,} parameters")
+    total_params = sum(p.numel() for p in mlp_model.parameters())
+    print(f"✅ MLP created: {total_params:,} parameters")
     if use_classification:
-        print(f"   Architecture: 30 → {' → '.join(map(str, CONFIG['hidden_dims']))} → {num_classes} (classification)")
+        print(f"   Architecture: {input_dim} → {' → '.join(map(str, CONFIG['hidden_dims']))} → {num_classes} (classification)")
         print(f"   Task: 4-class classification (class 0 = 1 token, class 1 = 2 tokens, class 2 = 3 tokens, class 3 = 4 tokens)")
     else:
-        print(f"   Architecture: 30 → {' → '.join(map(str, CONFIG['hidden_dims']))} → 1 (regression)")
+        print(f"   Architecture: {input_dim} → {' → '.join(map(str, CONFIG['hidden_dims']))} → 1 (regression)")
         print(f"   Task: Regression (predict block_size_rel)")
     
     # 2. Load dataset with question-level split (to avoid data leakage)
     print("\n[2/5] Loading dataset...")
     
     # Split by question to avoid data leakage (train/val/test)
-    train_indices, val_indices, test_indices = split_by_question(
+    train_indices, val_indices, test_indices = split_by_question_flexible(
         CONFIG['data_path'],
+        data_format=data_format,
         val_split=CONFIG['val_split'],
         test_split=CONFIG['test_split'],
         num_questions=CONFIG['num_questions'],
@@ -473,9 +828,30 @@ def main():
     )
     
     # Create train, val, and test datasets
-    train_dataset = SchedulerDataset(CONFIG['data_path'], sample_indices=train_indices, use_classification=use_classification)
-    val_dataset = SchedulerDataset(CONFIG['data_path'], sample_indices=val_indices, use_classification=use_classification)
-    test_dataset = SchedulerDataset(CONFIG['data_path'], sample_indices=test_indices, use_classification=use_classification)
+    train_dataset = SchedulerDataset(
+        CONFIG['data_path'], 
+        sample_indices=train_indices, 
+        use_classification=use_classification,
+        data_format=data_format,
+        model=llada_model,
+        use_hidden_states=use_hidden_states
+    )
+    val_dataset = SchedulerDataset(
+        CONFIG['data_path'], 
+        sample_indices=val_indices, 
+        use_classification=use_classification,
+        data_format=data_format,
+        model=llada_model,
+        use_hidden_states=use_hidden_states
+    )
+    test_dataset = SchedulerDataset(
+        CONFIG['data_path'], 
+        sample_indices=test_indices, 
+        use_classification=use_classification,
+        data_format=data_format,
+        model=llada_model,
+        use_hidden_states=use_hidden_states
+    )
     
     # Print first sample for inspection
     if len(train_dataset) > 0:
@@ -487,6 +863,14 @@ def main():
     
     # 3. Create dataloaders
     print("\n[3/5] Creating dataloaders...")
+    
+    # Create collate function (with or without hidden state extraction)
+    collate_fn = create_collate_fn(
+        model=llada_model,
+        use_hidden_states=use_hidden_states,
+        device=device
+    )
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=CONFIG['batch_size'],
@@ -515,7 +899,7 @@ def main():
     # 4. Setup optimizer and loss function
     print("\n[4/5] Setting up optimizer and loss...")
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        mlp_model.parameters(),
         lr=CONFIG['learning_rate'],
         weight_decay=CONFIG['weight_decay']
     )
@@ -573,11 +957,11 @@ def main():
         print(f"\n📍 Epoch {epoch}/{CONFIG['num_epochs']}")
         
         # Train
-        train_loss = train_epoch(model, train_loader, optimizer, criterion, device, epoch, use_classification=use_classification)
+        train_loss = train_epoch(mlp_model, train_loader, optimizer, criterion, device, epoch, use_classification=use_classification)
         print(f"  Train Loss: {train_loss:.4f}")
         
         # Validate
-        val_metrics = validate(model, val_loader, criterion, device, use_classification=use_classification)
+        val_metrics = validate(mlp_model, val_loader, criterion, device, use_classification=use_classification)
         val_loss = val_metrics['loss']
         print(f"  Val Loss:   {val_loss:.4f}")
         
@@ -606,7 +990,7 @@ def main():
         )
         torch.save({
             'epoch': epoch,
-            'model_state_dict': model.state_dict(),
+            'model_state_dict': mlp_model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'train_loss': train_loss,
             'val_loss': val_loss,
@@ -623,7 +1007,7 @@ def main():
             best_path = os.path.join(CONFIG['checkpoint_dir'], 'mlp_best.pt')
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': mlp_model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': train_loss,
                 'val_loss': val_loss,
@@ -663,8 +1047,8 @@ def main():
     print(f"\n🔄 Loading best model (Epoch {best_epoch})...")
     best_path = os.path.join(CONFIG['checkpoint_dir'], 'mlp_best.pt')
     checkpoint = torch.load(best_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
+    mlp_model.load_state_dict(checkpoint['model_state_dict'])
+    mlp_model.eval()
     print(f"✅ Best model loaded")
     
     # Helper function to collect predictions and labels
@@ -678,7 +1062,7 @@ def main():
                 features = batch['features'].to(device)
                 labels = batch['labels'].to(device)
                 
-                outputs = model(features)  # [batch_size, num_classes] or [batch_size]
+                outputs = mlp_model(features)  # [batch_size, num_classes] or [batch_size]
                 
                 if use_classification:
                     labels_long = labels.long()
