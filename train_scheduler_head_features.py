@@ -55,7 +55,7 @@ class SchedulerDataset(Dataset):
     ]
     
     def __init__(self, data_path: str, sample_indices: list = None, use_classification: bool = True, 
-                 data_format: str = 'csv', model=None, use_hidden_states: bool = False):
+                 data_format: str = 'csv', model=None, use_hidden_states: bool = False, csv_path: str = None):
         """
         Load training samples from CSV or JSON.
         
@@ -66,6 +66,7 @@ class SchedulerDataset(Dataset):
             data_format: 'csv' or 'json'
             model: LLaDA model for hidden state extraction (only if use_hidden_states=True)
             use_hidden_states: If True, extract hidden states from model
+            csv_path: Optional CSV path for hybrid loading (when data_format='json')
         
         We extract:
         - features: 30-dimensional feature vector (XGBoost features)
@@ -75,6 +76,7 @@ class SchedulerDataset(Dataset):
         self.use_hidden_states = use_hidden_states
         self.model = model
         self.use_classification = use_classification
+        self.csv_path = csv_path
         
         if data_format == 'csv':
             self._load_csv(data_path, sample_indices)
@@ -140,8 +142,12 @@ class SchedulerDataset(Dataset):
         import json
         
         # Determine CSV path from JSON path
-        # Use the FULL CSV (not _4tok version) as it has all 30 features
-        csv_path = json_path.replace('.json', '.csv')
+        # Prefer explicit csv_path if provided, otherwise derive from JSON path
+        if hasattr(self, 'csv_path') and self.csv_path:
+            csv_path = self.csv_path
+        else:
+            csv_path = json_path.replace('.json', '.csv')
+        
         if not os.path.exists(csv_path):
             raise FileNotFoundError(f"CSV not found: {csv_path}")
         
@@ -404,6 +410,10 @@ def create_collate_fn(model=None, use_hidden_states=False, device='cuda'):
         xgb_features = torch.zeros(batch_size, 30, dtype=torch.float32)
         labels = torch.zeros(batch_size, dtype=torch.float32)
         
+        # Debug flag to print once
+        if not hasattr(collate_fn, '_debug_printed'):
+            collate_fn._debug_printed = False
+        
         for i, item in enumerate(batch):
             xgb_features[i] = torch.tensor(item['features'], dtype=torch.float32)
             labels[i] = float(item['label'])  # Convert numpy.float32 to Python float
@@ -442,16 +452,48 @@ def create_collate_fn(model=None, use_hidden_states=False, device='cuda'):
                 # Get last layer hidden states: [batch_size, seq_len, hidden_dim]
                 last_hidden_states = outputs.hidden_states[-1]
                 
-                # Extract hidden state at token_position for each sample
+                # Extract hidden state at generation position for each sample
+                # IMPORTANT: Position in features is RELATIVE to generation start,
+                # but we need to find the ABSOLUTE position in the sequence.
+                # Strategy: Find first <|mdm_mask|> token (ID 126336) - that's where generation is at this step
+                MDM_MASK_TOKEN_ID = 126336
                 hidden_states_batch = []
+                
                 for i, pos in enumerate(token_positions):
-                    # Ensure position is within valid range
-                    pos = min(int(pos), last_hidden_states.shape[1] - 1)
-                    hidden_state = last_hidden_states[i, pos, :]  # [hidden_dim]
+                    # Find where generation is happening (first mask token)
+                    sample_input_ids = input_ids_padded[i]  # Full token ID list
+                    
+                    # Find first occurrence of mask token
+                    gen_position = None
+                    for j, token_id in enumerate(sample_input_ids):
+                        if token_id == MDM_MASK_TOKEN_ID:
+                            gen_position = j
+                            break
+                    
+                    # If no mask found, fall back to using attention mask length
+                    if gen_position is None:
+                        # Use last valid token position
+                        valid_length = sum(attention_masks[i])
+                        gen_position = max(0, valid_length - 1)
+                    
+                    # Extract hidden state at generation position
+                    gen_position = min(gen_position, last_hidden_states.shape[1] - 1)
+                    hidden_state = last_hidden_states[i, gen_position, :]  # [hidden_dim]
                     hidden_states_batch.append(hidden_state)
                 
                 # Stack: [batch_size, hidden_dim]
                 hidden_states_tensor = torch.stack(hidden_states_batch).cpu()
+                
+                # Debug: Print extraction info once
+                if not collate_fn._debug_printed:
+                    print(f"\n🔍 Hidden State Extraction Debug (first batch):")
+                    print(f"   Sample 0:")
+                    print(f"     Relative position from CSV: {token_positions[0]}")
+                    print(f"     Sequence length: {len(input_ids_padded[0])}")
+                    print(f"     First mask index (gen_position): {gen_position}")
+                    print(f"     Hidden state extracted from index: {gen_position}")
+                    print(f"   ✅ Now extracting from generation position, not prompt!")
+                    collate_fn._debug_printed = True
             
             # Concatenate XGBoost features + hidden states: [batch_size, 30 + 2048]
             features = torch.cat([xgb_features, hidden_states_tensor], dim=1)
@@ -531,33 +573,78 @@ class FeatureOnlySchedulerMLP(nn.Module):
             return out
 
 
-def plot_training_curves(train_losses, val_losses, save_path):
+def plot_training_curves(train_losses, val_losses, val_accuracies=None, save_path='training_curves.png'):
     """
-    Plot and save training/validation loss curves.
+    Plot and save training/validation loss and accuracy curves.
     
     Args:
         train_losses: List of training losses per epoch
         val_losses: List of validation losses per epoch
+        val_accuracies: List of validation accuracies per epoch (optional)
         save_path: Path to save the plot
     """
-    plt.figure(figsize=(10, 6))
-    epochs = range(1, len(train_losses) + 1)
+    if val_accuracies is not None:
+        # Create 2-subplot figure: loss + accuracy
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        epochs = range(1, len(train_losses) + 1)
+        
+        # Plot 1: Loss
+        ax1.plot(epochs, train_losses, 'b-o', label='Train Loss', linewidth=2, markersize=6)
+        ax1.plot(epochs, val_losses, 'r-s', label='Val Loss', linewidth=2, markersize=6)
+        ax1.set_xlabel('Epoch', fontsize=12)
+        ax1.set_ylabel('Loss', fontsize=12)
+        ax1.set_title('Training and Validation Loss', fontsize=14, fontweight='bold')
+        ax1.legend(fontsize=11)
+        ax1.grid(True, alpha=0.3)
+        
+        # Add best loss epoch marker
+        best_loss_epoch = val_losses.index(min(val_losses)) + 1
+        ax1.axvline(x=best_loss_epoch, color='g', linestyle='--', alpha=0.5, 
+                    label=f'Best Val Loss (Epoch {best_loss_epoch})')
+        ax1.legend(fontsize=10)
+        
+        # Plot 2: Validation Accuracy
+        ax2.plot(epochs, val_accuracies, 'r-s', label='Val Accuracy', linewidth=2, markersize=6)
+        ax2.set_xlabel('Epoch', fontsize=12)
+        ax2.set_ylabel('Accuracy', fontsize=12)
+        ax2.set_title('Validation Accuracy', fontsize=14, fontweight='bold')
+        ax2.legend(fontsize=11)
+        ax2.grid(True, alpha=0.3)
+        
+        # Add best accuracy epoch marker
+        best_acc_epoch = val_accuracies.index(max(val_accuracies)) + 1
+        ax2.axvline(x=best_acc_epoch, color='purple', linestyle='--', alpha=0.5,
+                    label=f'Best Val Acc (Epoch {best_acc_epoch})')
+        ax2.legend(fontsize=10)
+        
+        # Highlight discrepancy if epochs differ
+        if best_loss_epoch != best_acc_epoch:
+            ax2.axvline(x=best_loss_epoch, color='g', linestyle=':', alpha=0.3,
+                        label=f'Best Loss Epoch ({best_loss_epoch})')
+            ax2.legend(fontsize=9)
+        
+        plt.tight_layout()
+    else:
+        # Original single plot (loss only)
+        plt.figure(figsize=(10, 6))
+        epochs = range(1, len(train_losses) + 1)
+        
+        plt.plot(epochs, train_losses, 'b-o', label='Train Loss', linewidth=2, markersize=6)
+        plt.plot(epochs, val_losses, 'r-s', label='Val Loss', linewidth=2, markersize=6)
+        
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
+        plt.title('Training and Validation Loss', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        
+        # Add best epoch marker
+        best_epoch = val_losses.index(min(val_losses)) + 1
+        plt.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.5, label=f'Best Epoch ({best_epoch})')
+        plt.legend(fontsize=11)
+        
+        plt.tight_layout()
     
-    plt.plot(epochs, train_losses, 'b-o', label='Train Loss', linewidth=2, markersize=6)
-    plt.plot(epochs, val_losses, 'r-s', label='Val Loss', linewidth=2, markersize=6)
-    
-    plt.xlabel('Epoch', fontsize=12)
-    plt.ylabel('Loss (MSE)', fontsize=12)
-    plt.title('Training and Validation Loss', fontsize=14, fontweight='bold')
-    plt.legend(fontsize=11)
-    plt.grid(True, alpha=0.3)
-    
-    # Add best epoch marker
-    best_epoch = val_losses.index(min(val_losses)) + 1
-    plt.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.5, label=f'Best Epoch ({best_epoch})')
-    plt.legend(fontsize=11)
-    
-    plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     print(f"📊 Training curve saved: {save_path}")
     plt.close()
@@ -709,7 +796,8 @@ def main():
     CONFIG = {
         # Data config
         'data_format': 'json',  # 'csv' or 'json' (JSON required for hidden states)
-        'data_path': 'data/sft_training_samples_multi_greedy_parallel.json',  # Path to data
+        'data_path': 'data/sft_training_samples_multi_greedy_parallel.json',  # Path to data (✅ MATCHED: 28,780 samples, 3,629 questions - FULL MERGED)
+        'csv_path': 'data/sft_training_samples_multi_greedy_parallel.csv',  # CSV for features (hybrid mode: ALL 30 FEATURES NOW INCLUDED!)
         'num_questions': None,  # Number of questions to use (None = use all, 1 = overfit test)
         'val_split': 0.15,  # 15% for validation
         'test_split': 0.15,  # 15% for test
@@ -721,8 +809,8 @@ def main():
         'use_hidden_states': True,  # ⭐ NEW: Use LLaDA hidden states + XGBoost features (30 + 2048 = 2078 dim)
         
         # Training config
-        'batch_size': 8,  # Smaller batch when using hidden states (more memory)
-        'num_epochs': 20,  # More epochs since it's fast without transformer
+        'batch_size': 2,  # Smaller batch when using hidden states (more memory)
+        'num_epochs': 6,  # More epochs since it's fast without transformer
         'early_stopping_patience': 5,  # Be patient
         'use_class_weights': True,  # Balance classes (CRITICAL for imbalanced data!)
         
@@ -834,7 +922,8 @@ def main():
         use_classification=use_classification,
         data_format=data_format,
         model=llada_model,
-        use_hidden_states=use_hidden_states
+        use_hidden_states=use_hidden_states,
+        csv_path=CONFIG.get('csv_path', None)
     )
     val_dataset = SchedulerDataset(
         CONFIG['data_path'], 
@@ -842,7 +931,8 @@ def main():
         use_classification=use_classification,
         data_format=data_format,
         model=llada_model,
-        use_hidden_states=use_hidden_states
+        use_hidden_states=use_hidden_states,
+        csv_path=CONFIG.get('csv_path', None)
     )
     test_dataset = SchedulerDataset(
         CONFIG['data_path'], 
@@ -850,7 +940,8 @@ def main():
         use_classification=use_classification,
         data_format=data_format,
         model=llada_model,
-        use_hidden_states=use_hidden_states
+        use_hidden_states=use_hidden_states,
+        csv_path=CONFIG.get('csv_path', None)
     )
     
     # Print first sample for inspection
@@ -946,9 +1037,10 @@ def main():
     best_epoch = 0
     epochs_without_improvement = 0
     
-    # Track losses for plotting
+    # Track losses and accuracies for plotting
     train_losses = []
     val_losses = []
+    val_accuracies = []  # Track val accuracy to visualize loss vs accuracy discrepancy
     
     # Start total training timer
     total_start_time = time.time()
@@ -979,9 +1071,11 @@ def main():
             print(f"  Val R²:     {val_metrics['r2']:.4f}")
             print(f"  [XGBoost baseline: RMSE=0.16, MAE=0.12, R²=0.63]")
         
-        # Track losses
+        # Track losses and accuracies
         train_losses.append(train_loss)
         val_losses.append(val_loss)
+        if use_classification:
+            val_accuracies.append(val_metrics['accuracy'])
         
         # Save checkpoint
         checkpoint_path = os.path.join(
@@ -1180,9 +1274,10 @@ def main():
         json.dump(loss_history, f, indent=2)
     print(f"\n📝 Loss history saved: {loss_history_path}")
     
-    # Plot training curves
+    # Plot training curves (loss and accuracy)
     plot_path = os.path.join(CONFIG['checkpoint_dir'], 'training_curves.png')
-    plot_training_curves(train_losses, val_losses, plot_path)
+    val_accs_to_plot = val_accuracies if (use_classification and len(val_accuracies) > 0) else None
+    plot_training_curves(train_losses, val_losses, val_accs_to_plot, plot_path)
 
 
 if __name__ == '__main__':
