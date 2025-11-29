@@ -266,7 +266,7 @@ class SchedulerDataset(Dataset):
             'features': self.features[idx],  # (30,) array
             'label': self.labels[idx]  # scalar
         }
-        
+
         # Add data needed for hidden state extraction
         if self.use_hidden_states:
             result['input_ids'] = self.input_ids[idx]  # list of token IDs
@@ -307,7 +307,7 @@ def split_by_question_flexible(data_path: str, data_format: str, val_split: floa
         import json
         with open(data_path, 'r') as f:
             all_samples = json.load(f)
-        
+    
         # Group samples by question_id
         question_to_samples = {}
         for idx, sample in enumerate(all_samples):
@@ -380,7 +380,7 @@ def split_by_question_flexible(data_path: str, data_format: str, val_split: floa
         raise ValueError(f"Unsupported data_format: {data_format}")
 
 
-def create_collate_fn(model=None, use_hidden_states=False, device='cuda'):
+def create_collate_fn(model=None, use_hidden_states=False, device='cuda', use_dual_stream=False):
     """
     Factory function to create a collate function with optional hidden state extraction.
     
@@ -388,6 +388,7 @@ def create_collate_fn(model=None, use_hidden_states=False, device='cuda'):
         model: LLaDA model for hidden state extraction
         use_hidden_states: Whether to extract hidden states
         device: Device for model inference
+        use_dual_stream: If True, return full hidden states separately (not concatenated)
     
     Returns:
         collate_fn function
@@ -401,8 +402,8 @@ def create_collate_fn(model=None, use_hidden_states=False, device='cuda'):
         
         Returns:
             Dict with batched tensors:
-            - features: [batch_size, 30] or [batch_size, 2078] float tensor
-            - labels: [batch_size] float tensor
+                - features: [batch_size, 30] or [batch_size, 2078] float tensor
+                - labels: [batch_size] float tensor
         """
         batch_size = len(batch)
         
@@ -420,93 +421,253 @@ def create_collate_fn(model=None, use_hidden_states=False, device='cuda'):
         
         # If using hidden states, extract them dynamically
         if use_hidden_states and model is not None:
-            # Prepare input_ids with padding
-            input_ids_list = [item['input_ids'] for item in batch]
-            token_positions = [item['token_position'] for item in batch]
-            
-            # Pad sequences to max length in batch
-            max_len = max(len(ids) for ids in input_ids_list)
-            input_ids_padded = []
-            attention_masks = []
-            
-            for ids in input_ids_list:
-                # Pad to max_len
-                padding_length = max_len - len(ids)
-                padded_ids = ids + [0] * padding_length  # Assume 0 is pad token
-                attention_mask = [1] * len(ids) + [0] * padding_length
+                # Prepare input_ids with padding
+                input_ids_list = [item['input_ids'] for item in batch]
+                token_positions = [item['token_position'] for item in batch]
                 
-                input_ids_padded.append(padded_ids)
-                attention_masks.append(attention_mask)
-            
-            # Convert to tensors
-            input_ids_tensor = torch.tensor(input_ids_padded, dtype=torch.long).to(device)
-            attention_mask_tensor = torch.tensor(attention_masks, dtype=torch.long).to(device)
-            
-            # Extract hidden states from model
-            with torch.no_grad():
-                outputs = model(
-                    input_ids=input_ids_tensor,
-                    attention_mask=attention_mask_tensor,
-                    output_hidden_states=True
-                )
-                # Get last layer hidden states: [batch_size, seq_len, hidden_dim]
-                last_hidden_states = outputs.hidden_states[-1]
+                # Pad sequences to max length in batch
+                max_len = max(len(ids) for ids in input_ids_list)
+                input_ids_padded = []
+                attention_masks = []
                 
-                # Extract hidden state at generation position for each sample
-                # IMPORTANT: Position in features is RELATIVE to generation start,
-                # but we need to find the ABSOLUTE position in the sequence.
-                # Strategy: Find first <|mdm_mask|> token (ID 126336) - that's where generation is at this step
-                MDM_MASK_TOKEN_ID = 126336
-                hidden_states_batch = []
-                
-                for i, pos in enumerate(token_positions):
-                    # Find where generation is happening (first mask token)
-                    sample_input_ids = input_ids_padded[i]  # Full token ID list
+                for ids in input_ids_list:
+                    # Pad to max_len
+                    padding_length = max_len - len(ids)
+                    padded_ids = ids + [0] * padding_length  # Assume 0 is pad token
+                    attention_mask = [1] * len(ids) + [0] * padding_length
                     
-                    # Find first occurrence of mask token
-                    gen_position = None
-                    for j, token_id in enumerate(sample_input_ids):
-                        if token_id == MDM_MASK_TOKEN_ID:
-                            gen_position = j
-                            break
-                    
-                    # If no mask found, fall back to using attention mask length
-                    if gen_position is None:
-                        # Use last valid token position
-                        valid_length = sum(attention_masks[i])
-                        gen_position = max(0, valid_length - 1)
-                    
-                    # Extract hidden state at generation position
-                    gen_position = min(gen_position, last_hidden_states.shape[1] - 1)
-                    hidden_state = last_hidden_states[i, gen_position, :]  # [hidden_dim]
-                    hidden_states_batch.append(hidden_state)
+                    input_ids_padded.append(padded_ids)
+                    attention_masks.append(attention_mask)
                 
-                # Stack: [batch_size, hidden_dim]
-                hidden_states_tensor = torch.stack(hidden_states_batch).cpu()
+                # Convert to tensors
+                input_ids_tensor = torch.tensor(input_ids_padded, dtype=torch.long).to(device)
+                attention_mask_tensor = torch.tensor(attention_masks, dtype=torch.long).to(device)
                 
-                # Debug: Print extraction info once
-                if not collate_fn._debug_printed:
-                    print(f"\n🔍 Hidden State Extraction Debug (first batch):")
-                    print(f"   Sample 0:")
-                    print(f"     Relative position from CSV: {token_positions[0]}")
-                    print(f"     Sequence length: {len(input_ids_padded[0])}")
-                    print(f"     First mask index (gen_position): {gen_position}")
-                    print(f"     Hidden state extracted from index: {gen_position}")
-                    print(f"   ✅ Now extracting from generation position, not prompt!")
-                    collate_fn._debug_printed = True
-            
-            # Concatenate XGBoost features + hidden states: [batch_size, 30 + 2048]
-            features = torch.cat([xgb_features, hidden_states_tensor], dim=1)
+                # Extract hidden states from model
+                with torch.no_grad():
+                    outputs = model(
+                        input_ids=input_ids_tensor,
+                        attention_mask=attention_mask_tensor,
+                        output_hidden_states=True
+                    )
+                    # Get last layer hidden states: [batch_size, seq_len, hidden_dim]
+                    last_hidden_states = outputs.hidden_states[-1]
+                    
+                    # For dual-stream mode: return FULL hidden states [batch_size, seq_len, hidden_dim]
+                    # For single-stream mode: extract single position [batch_size, hidden_dim]
+                    
+                    if use_dual_stream:
+                        # Return full hidden states (will be pooled by the model)
+                        # Convert BFloat16 to Float32 for MLP compatibility
+                        hidden_states_tensor = last_hidden_states.float().cpu()  # [batch_size, seq_len, hidden_dim]
+                        
+                        # Debug: Print extraction info once
+                        if not collate_fn._debug_printed:
+                            print(f"\n🔍 Hidden State Extraction Debug (first batch) - DUAL STREAM MODE:")
+                            print(f"   Full hidden states shape: {hidden_states_tensor.shape}")
+                            print(f"   Will be pooled by the model after projection")
+                            print(f"   ✅ Using ALL positions for dual-stream!")
+                            collate_fn._debug_printed = True
+                    else:
+                        # Extract hidden state at generation position for each sample
+                        # IMPORTANT: Position in features is RELATIVE to generation start,
+                        # but we need to find the ABSOLUTE position in the sequence.
+                        # Strategy: Find first <|mdm_mask|> token (ID 126336) - that's where generation is at this step
+                        MDM_MASK_TOKEN_ID = 126336
+                        hidden_states_batch = []
+                        
+                        for i, pos in enumerate(token_positions):
+                            # Find where generation is happening (first mask token)
+                            sample_input_ids = input_ids_padded[i]  # Full token ID list
+                            
+                            # Find first occurrence of mask token
+                            gen_position = None
+                            for j, token_id in enumerate(sample_input_ids):
+                                if token_id == MDM_MASK_TOKEN_ID:
+                                    gen_position = j
+                                    break
+                            
+                            # If no mask found, fall back to using attention mask length
+                            if gen_position is None:
+                                # Use last valid token position
+                                valid_length = sum(attention_masks[i])
+                                gen_position = max(0, valid_length - 1)
+                            
+                            # Extract hidden state at generation position
+                            gen_position = min(gen_position, last_hidden_states.shape[1] - 1)
+                            hidden_state = last_hidden_states[i, gen_position, :]  # [hidden_dim]
+                            hidden_states_batch.append(hidden_state)
+                        
+                        # Stack: [batch_size, hidden_dim]
+                        # Convert BFloat16 to Float32 for MLP compatibility
+                        hidden_states_tensor = torch.stack(hidden_states_batch).float().cpu()
+                        
+                        # Debug: Print extraction info once
+                        if not collate_fn._debug_printed:
+                            print(f"\n🔍 Hidden State Extraction Debug (first batch) - SINGLE STREAM MODE:")
+                            print(f"   Sample 0:")
+                            print(f"     Relative position from CSV: {token_positions[0]}")
+                            print(f"     Sequence length: {len(input_ids_padded[0])}")
+                            print(f"     First mask index (gen_position): {gen_position}")
+                            print(f"     Hidden state extracted from index: {gen_position}")
+                            print(f"   ✅ Now extracting from generation position, not prompt!")
+                            collate_fn._debug_printed = True
+                
+                if use_dual_stream:
+                    # Return separate features and hidden states
+                    result = {
+                        'features': xgb_features,  # [batch_size, 30]
+                        'hidden_states': hidden_states_tensor,  # [batch_size, seq_len, hidden_dim]
+                        'labels': labels  # [batch_size]
+                    }
+                else:
+                    # Concatenate XGBoost features + hidden states: [batch_size, 30 + 2048]
+                    features = torch.cat([xgb_features, hidden_states_tensor], dim=1)
+                    result = {
+                        'features': features,  # [batch_size, 30 + hidden_dim]
+                        'labels': labels  # [batch_size]
+                    }
         else:
             # Use only XGBoost features
-            features = xgb_features
+            result = {
+                'features': xgb_features,  # [batch_size, 30]
+                'labels': labels  # [batch_size]
+            }
         
-        return {
-            'features': features,  # [batch_size, 30] or [batch_size, 2078]
-            'labels': labels  # [batch_size]
-        }
+        return result
     
     return collate_fn
+
+
+class DualStreamSchedulerMLP(nn.Module):
+    """
+    Dual-stream MLP with per-class learnable weights.
+    
+    Architecture:
+    - Stream 1: Hidden states (97, 4096) → project → pool → MLP → [4] logits
+    - Stream 2: XGBoost features (30) → MLP → [4] logits
+    - Fusion: Per-class weighted sum with learnable weights
+    
+    This allows the model to learn how much to trust each stream for each class.
+    """
+    
+    def __init__(self, xgb_feature_dim=30, hidden_size=4096, projection_dim=512, 
+                 mlp_hidden_dims=[256, 128], num_classes=4):
+        """
+        Args:
+            xgb_feature_dim: Number of XGBoost features (default: 30)
+            hidden_size: Hidden state dimension from transformer (default: 4096)
+            projection_dim: Dimension to project hidden states to before pooling (default: 512)
+            mlp_hidden_dims: Hidden dimensions for both MLPs (default: [256, 128])
+            num_classes: Number of output classes (default: 4)
+        """
+        super().__init__()
+        
+        self.num_classes = num_classes
+        self.hidden_size = hidden_size
+        self.projection_dim = projection_dim
+        
+        # ===== Hidden State Stream =====
+        # Process ALL positions through MLP, pool at the very end (like LM head)
+        # nn.Linear operates on last dimension, so this processes each position independently
+        hidden_layers = []
+        prev_dim = hidden_size  # Start from 4096
+        
+        # First project down
+        hidden_layers.extend([
+            nn.Linear(prev_dim, projection_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        ])
+        prev_dim = projection_dim
+        
+        # Then process through MLP layers
+        for hidden_dim in mlp_hidden_dims:
+            hidden_layers.extend([
+                nn.Linear(prev_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(0.1)
+            ])
+            prev_dim = hidden_dim
+        
+        # Final layer: output num_classes for each position
+        hidden_layers.append(nn.Linear(prev_dim, num_classes))
+        self.hidden_mlp = nn.Sequential(*hidden_layers)
+        # After this MLP: [batch, 97, 4096] → [batch, 97, 4]
+        # We'll pool to [batch, 4] in forward()
+        
+        # ===== Feature Stream =====
+        feature_layers = []
+        prev_dim = xgb_feature_dim
+        for hidden_dim in mlp_hidden_dims:
+            feature_layers.extend([
+                nn.Linear(prev_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(0.1)
+            ])
+            prev_dim = hidden_dim
+        feature_layers.append(nn.Linear(prev_dim, num_classes))
+        self.feature_mlp = nn.Sequential(*feature_layers)
+        
+        # ===== Per-Class Fusion Weights =====
+        # Initialize to 0.5 (equal weighting)
+        self.class_weights = nn.Parameter(torch.ones(num_classes) * 0.0)  # sigmoid(0) = 0.5
+    
+    def forward(self, xgb_features, hidden_states=None):
+        """
+        Args:
+            xgb_features: [batch_size, 30] XGBoost features
+            hidden_states: [batch_size, seq_len, 4096] transformer hidden states (optional)
+        
+        Returns:
+            [batch_size, num_classes] logits
+        """
+        if hidden_states is None:
+            # Features-only mode (fallback)
+            return self.feature_mlp(xgb_features)
+        
+        # ===== Process Hidden States =====
+        # Convert BFloat16 from LLaDA model to Float32 for MLP
+        if hidden_states.dtype == torch.bfloat16:
+            hidden_states = hidden_states.float()
+        
+        # Process ALL positions through MLP (just like LM head does)
+        # nn.Linear operates on last dimension, so each position processed independently
+        # [B, seq_len, 4096] → [B, seq_len, 512] → ... → [B, seq_len, 4]
+        h = self.hidden_mlp(hidden_states)
+        
+        # Pool at the VERY END (after all transformations)
+        # [B, seq_len, 4] → [B, 4]
+        hidden_logits = h.mean(dim=1)
+        
+        # ===== Process XGBoost Features =====
+        # [B, 30] → [B, num_classes]
+        feature_logits = self.feature_mlp(xgb_features)
+        
+        # ===== Per-Class Weighted Fusion =====
+        # Normalize weights to [0, 1]
+        w_h = torch.sigmoid(self.class_weights)  # [num_classes]
+        w_f = 1 - w_h  # [num_classes]
+        
+        # Element-wise weighted sum
+        # w_h broadcasts from [4] to [B, 4]
+        final_logits = w_h * hidden_logits + w_f * feature_logits
+        
+        return final_logits
+    
+    def get_fusion_weights(self):
+        """Return interpretable fusion weights for each class."""
+        w_h = torch.sigmoid(self.class_weights).detach().cpu().numpy()
+        w_f = 1 - w_h
+        
+        weights_dict = {}
+        for i in range(self.num_classes):
+            weights_dict[f'class_{i+1}_tokens'] = {
+                'hidden_weight': float(w_h[i]),
+                'feature_weight': float(w_f[i]),
+                'preference': 'hidden' if w_h[i] > 0.6 else ('feature' if w_f[i] > 0.6 else 'balanced')
+            }
+        return weights_dict
 
 
 class FeatureOnlySchedulerMLP(nn.Module):
@@ -650,8 +811,8 @@ def plot_training_curves(train_losses, val_losses, val_accuracies=None, save_pat
     plt.close()
 
 
-def train_epoch(model, dataloader, optimizer, criterion, device, epoch, use_classification=False):
-    """Train for one epoch with feature-only model."""
+def train_epoch(model, dataloader, optimizer, criterion, device, epoch, use_classification=False, use_dual_stream=False):
+    """Train for one epoch (supports both single-stream and dual-stream models)."""
     model.train()
     
     total_loss = 0.0
@@ -668,11 +829,19 @@ def train_epoch(model, dataloader, optimizer, criterion, device, epoch, use_clas
             print(f"\n🔍 Batch Debug Info:")
             print(f"   Batch size: {features.shape[0]}")
             print(f"   Feature dimensions: {features.shape[1]} (30 XGBoost features)")
+            if 'hidden_states' in batch:
+                print(f"   Hidden state dimensions: {batch['hidden_states'].shape} (seq_len x hidden_size)")
             print(f"   Sample features[0]: {features[0, :5].tolist()}... (first 5)")
             print(f"   Sample labels: {labels[:5].tolist()}")
         
         # Forward pass
-        outputs = model(features)  # [batch_size, num_classes] or [batch_size]
+        if use_dual_stream:
+            # Dual-stream model: pass both features and hidden states
+            hidden_states = batch['hidden_states'].to(device) if 'hidden_states' in batch else None
+            outputs = model(features, hidden_states)  # [batch_size, num_classes]
+        else:
+            # Single-stream model: only features
+            outputs = model(features)  # [batch_size, num_classes] or [batch_size]
         
         if use_classification:
             # Classification: outputs are logits, labels are class indices
@@ -701,7 +870,7 @@ def train_epoch(model, dataloader, optimizer, criterion, device, epoch, use_clas
     return avg_loss
 
 
-def validate(model, dataloader, criterion, device, use_classification=False):
+def validate(model, dataloader, criterion, device, use_classification=False, use_dual_stream=False):
     """Validate on validation set and return comprehensive metrics."""
     model.eval()
     
@@ -719,7 +888,13 @@ def validate(model, dataloader, criterion, device, use_classification=False):
             labels = batch['labels'].to(device)  # [batch_size]
             
             # Forward pass
-            outputs = model(features)  # [batch_size, num_classes] or [batch_size]
+            if use_dual_stream:
+                # Dual-stream model: pass both features and hidden states
+                hidden_states = batch['hidden_states'].to(device) if 'hidden_states' in batch else None
+                outputs = model(features, hidden_states)  # [batch_size, num_classes]
+            else:
+                # Single-stream model: only features
+                outputs = model(features)  # [batch_size, num_classes] or [batch_size]
             
             if use_classification:
                 # Classification: outputs are logits
@@ -775,10 +950,10 @@ def validate(model, dataloader, criterion, device, use_classification=False):
         
         return {
             'loss': total_loss / num_batches,
-            'mse': mse,
-            'mae': mae,
-            'r2': r2
-        }
+        'mse': mse,
+        'mae': mae,
+        'r2': r2
+    }
 
 
 def main():
@@ -795,31 +970,33 @@ def main():
     # Configuration
     CONFIG = {
         # Data config
-        'data_format': 'json',  # 'csv' or 'json' (JSON required for hidden states)
-        'data_path': 'data/sft_training_samples_multi_greedy_parallel.json',  # Path to data (✅ MATCHED: 28,780 samples, 3,629 questions - FULL MERGED)
+        'data_format': 'json',  # 'csv' or 'json' (JSON needed for hidden states)
+        'data_path': 'data/sft_training_samples_multi_greedy_parallel.json',  # Path to data
         'csv_path': 'data/sft_training_samples_multi_greedy_parallel.csv',  # CSV for features (hybrid mode: ALL 30 FEATURES NOW INCLUDED!)
-        'num_questions': None,  # Number of questions to use (None = use all, 1 = overfit test)
+        'num_questions': 10,  # Number of questions to use (None = use all, 1 = overfit test)
         'val_split': 0.15,  # 15% for validation
         'test_split': 0.15,  # 15% for test
         
         # Model config
-        'hidden_dims': [256, 128, 64],  # MLP hidden layer dimensions
+        'use_dual_stream': True,  # ⭐ NEW: Use dual-stream architecture (hidden states + features with per-class weights)
+        'hidden_dims': [256, 128],  # MLP hidden layer dimensions (for both streams)
+        'projection_dim': 512,  # Project hidden states from 4096 → 512 before pooling
         'use_classification': True,  # True = 4-class classification (1, 2, 3, 4 tokens), False = regression
         'num_classes': 4,  # 4-class classification: class 0 = 1 token, class 1 = 2 tokens, class 2 = 3 tokens, class 3 = 4 tokens
-        'use_hidden_states': True,  # ⭐ NEW: Use LLaDA hidden states + XGBoost features (30 + 2048 = 2078 dim)
+        'use_hidden_states': True,  # ⭐ REQUIRED for dual-stream: Extract LLaDA hidden states
         
         # Training config
-        'batch_size': 2,  # Smaller batch when using hidden states (more memory)
-        'num_epochs': 6,  # More epochs since it's fast without transformer
-        'early_stopping_patience': 5,  # Be patient
+        'batch_size': 4,  # Smaller batch when using hidden states (more memory)
+        'num_epochs': 1,  # More epochs to learn fusion weights
+        'early_stopping_patience': 10,  # Be patient with dual-stream
         'use_class_weights': True,  # Balance classes (CRITICAL for imbalanced data!)
         
         # Optimizer config
         'learning_rate': 1e-3,  # Higher LR for simple MLP
-        'weight_decay': 0.1,  # L2 regularization for AdamW (0.0 = no regularization for overfit test)
+        'weight_decay': 0.01,  # L2 regularization for AdamW
         
         # System config
-        'checkpoint_dir': 'checkpoints/scheduler_head_features',
+        'checkpoint_dir': 'checkpoints/scheduler_head_dual_stream',
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'seed': SEED,
     }
@@ -878,29 +1055,54 @@ def main():
     print("\n[1/5] Creating MLP...")
     use_classification = CONFIG.get('use_classification', False)
     num_classes = CONFIG.get('num_classes', None) if use_classification else None
+    use_dual_stream = CONFIG.get('use_dual_stream', False)
     
-    # Determine input dimension
-    if use_hidden_states:
-        input_dim = 30 + hidden_size  # XGBoost features + hidden states
-        print(f"   Input dimension: 30 (features) + {hidden_size} (hidden states) = {input_dim}")
-    else:
-        input_dim = 30  # Only XGBoost features
-    
-    mlp_model = FeatureOnlySchedulerMLP(
-        input_dim=input_dim,
-        hidden_dims=CONFIG['hidden_dims'],
-        num_classes=num_classes
+    if use_dual_stream:
+        # Dual-stream architecture: hidden states + features with per-class fusion
+        projection_dim = CONFIG.get('projection_dim', 512)
+        
+        mlp_model = DualStreamSchedulerMLP(
+            xgb_feature_dim=30,
+            hidden_size=hidden_size,
+            projection_dim=projection_dim,
+            mlp_hidden_dims=CONFIG['hidden_dims'],
+            num_classes=num_classes
     ).to(device)
+        
+        print(f"✅ Dual-Stream MLP created")
+        print(f"   Stream 1 (Hidden): [seq_len, {hidden_size}] → MLP[{hidden_size}→{projection_dim}→{CONFIG['hidden_dims']}→4] → pool → [4]")
+        print(f"   Stream 2 (Features): [30] → MLP{CONFIG['hidden_dims']} → [4]")
+        print(f"   Fusion: Per-class weighted sum (4 learnable weights)")
+        print(f"   ⭐ Hidden stream pools LATE (after all MLP layers, like LM head)")
+        
+    else:
+        # Single-stream architecture (original)
+        # Determine input dimension
+        if use_hidden_states:
+            input_dim = 30 + hidden_size  # XGBoost features + hidden states
+            print(f"   Input dimension: 30 (features) + {hidden_size} (hidden states) = {input_dim}")
+        else:
+            input_dim = 30  # Only XGBoost features
+        
+        mlp_model = FeatureOnlySchedulerMLP(
+            input_dim=input_dim,
+            hidden_dims=CONFIG['hidden_dims'],
+            num_classes=num_classes
+        ).to(device)
+        
+        print(f"✅ MLP created")
+        if use_classification:
+            print(f"   Architecture: {input_dim} → {' → '.join(map(str, CONFIG['hidden_dims']))} → {num_classes} (classification)")
+            print(f"   Task: 4-class classification (class 0 = 1 token, class 1 = 2 tokens, class 2 = 3 tokens, class 3 = 4 tokens)")
+        else:
+            print(f"   Architecture: {input_dim} → {' → '.join(map(str, CONFIG['hidden_dims']))} → 1 (regression)")
+            print(f"   Task: Regression (predict block_size_rel)")
     
     # Count parameters
     total_params = sum(p.numel() for p in mlp_model.parameters())
-    print(f"✅ MLP created: {total_params:,} parameters")
-    if use_classification:
-        print(f"   Architecture: {input_dim} → {' → '.join(map(str, CONFIG['hidden_dims']))} → {num_classes} (classification)")
-        print(f"   Task: 4-class classification (class 0 = 1 token, class 1 = 2 tokens, class 2 = 3 tokens, class 3 = 4 tokens)")
-    else:
-        print(f"   Architecture: {input_dim} → {' → '.join(map(str, CONFIG['hidden_dims']))} → 1 (regression)")
-        print(f"   Task: Regression (predict block_size_rel)")
+    trainable_params = sum(p.numel() for p in mlp_model.parameters() if p.requires_grad)
+    print(f"   Total parameters: {total_params:,}")
+    print(f"   Trainable parameters: {trainable_params:,}")
     
     # 2. Load dataset with question-level split (to avoid data leakage)
     print("\n[2/5] Loading dataset...")
@@ -959,7 +1161,8 @@ def main():
     collate_fn = create_collate_fn(
         model=llada_model,
         use_hidden_states=use_hidden_states,
-        device=device
+        device=device,
+        use_dual_stream=use_dual_stream
     )
     
     train_loader = DataLoader(
@@ -1049,11 +1252,13 @@ def main():
         print(f"\n📍 Epoch {epoch}/{CONFIG['num_epochs']}")
         
         # Train
-        train_loss = train_epoch(mlp_model, train_loader, optimizer, criterion, device, epoch, use_classification=use_classification)
+        train_loss = train_epoch(mlp_model, train_loader, optimizer, criterion, device, epoch, 
+                                use_classification=use_classification, use_dual_stream=use_dual_stream)
         print(f"  Train Loss: {train_loss:.4f}")
         
         # Validate
-        val_metrics = validate(mlp_model, val_loader, criterion, device, use_classification=use_classification)
+        val_metrics = validate(mlp_model, val_loader, criterion, device, 
+                              use_classification=use_classification, use_dual_stream=use_dual_stream)
         val_loss = val_metrics['loss']
         print(f"  Val Loss:   {val_loss:.4f}")
         
@@ -1156,7 +1361,12 @@ def main():
                 features = batch['features'].to(device)
                 labels = batch['labels'].to(device)
                 
-                outputs = mlp_model(features)  # [batch_size, num_classes] or [batch_size]
+                # Forward pass (dual-stream or single-stream)
+                if use_dual_stream:
+                    hidden_states = batch['hidden_states'].to(device) if 'hidden_states' in batch else None
+                    outputs = mlp_model(features, hidden_states)
+                else:
+                    outputs = mlp_model(features)  # [batch_size, num_classes] or [batch_size]
                 
                 if use_classification:
                     labels_long = labels.long()
@@ -1225,6 +1435,25 @@ def main():
                 y_test_true, y_test_probs[:, 0],
                 save_path="./output/mlp_pr_curve.png"
             )
+    
+    # Print learned fusion weights for dual-stream model
+    if use_dual_stream:
+        print("\n" + "="*80)
+        print("🎯 LEARNED FUSION WEIGHTS (Per-Class)")
+        print("="*80)
+        fusion_weights = mlp_model.get_fusion_weights()
+        for class_name, weights in fusion_weights.items():
+            print(f"\n{class_name}:")
+            print(f"   Hidden states: {weights['hidden_weight']:.1%}")
+            print(f"   XGBoost features: {weights['feature_weight']:.1%}")
+            print(f"   → Preference: {weights['preference'].upper()}")
+        
+        # Summary
+        avg_hidden_weight = np.mean([w['hidden_weight'] for w in fusion_weights.values()])
+        avg_feature_weight = np.mean([w['feature_weight'] for w in fusion_weights.values()])
+        print(f"\n📊 Average across all classes:")
+        print(f"   Hidden states: {avg_hidden_weight:.1%}")
+        print(f"   XGBoost features: {avg_feature_weight:.1%}")
     
     print("\n⏱️  TIMING REPORT:")
     print(f"   Epochs completed: {actual_epochs}/{CONFIG['num_epochs']}")

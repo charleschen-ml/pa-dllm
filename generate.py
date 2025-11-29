@@ -120,6 +120,186 @@ def predict_block_size_neural(
         return block_size, logits
 
 
+def predict_block_size_mlp_features(
+    model,
+    mlp_scheduler,
+    tokenizer,
+    x,
+    curr_pos,
+    gen_start,
+    gen_length,
+    scheduler,
+    use_regression,
+    block_size_offset=0,
+    max_block_size=10,
+    verbose=True,
+    use_hidden_states=False  # NEW: Set to True to use hidden states, False for features-only
+):
+    """
+    Predict block size using external MLP (features-only OR features + hidden states).
+    
+    Args:
+        model: LLaDA model (for extracting hidden states if use_hidden_states=True)
+        mlp_scheduler: External trained MLP model (FeatureOnlySchedulerMLP)
+        tokenizer: Tokenizer for decoding (for debug prints and feature extraction)
+        x: Current sequence tensor [batch_size, seq_len]
+        curr_pos: Current position in generation (relative to gen_start)
+        gen_start: Starting position of generation in full sequence (prompt length)
+        gen_length: Total generation length
+        scheduler: XGBoost model (used only for extracting features via predict_block_size_xgboost)
+        use_regression: Compatibility parameter (not used, MLP uses classification)
+        block_size_offset: Conservative offset to subtract from predicted block_size
+        max_block_size: Maximum allowed block size
+        verbose: If True, print prediction details
+        use_hidden_states: If True, extract and use hidden states (30+4096 dims). If False, features-only (30 dims).
+    
+    Returns:
+        block_size: Final predicted block size (int, one of 1/2/3/4)
+        logits: Model logits output [batch_size, seq_len, vocab_size]
+    """
+    
+    # Calculate absolute position in full sequence (prompt + generation)
+    abs_pos = gen_start + curr_pos
+    
+    # Step 1: Run model forward pass to get logits (and optionally hidden states)
+    outputs = model(
+        x,
+        output_hidden_states=use_hidden_states  # Only request if needed
+    )
+    
+    logits = outputs.logits
+    
+    # Extract hidden states if requested
+    if use_hidden_states:
+        # Find the first mask token position (126336)
+        mask_id = 126336
+        first_mask_idx = next((i for i, tid in enumerate(x[0]) if tid == mask_id), abs_pos)
+        
+        # Get hidden states from last layer
+        last_hidden_states = outputs.hidden_states[-1]  # [batch_size, seq_len, hidden_size]
+        hidden_state_at_pos = last_hidden_states[0, first_mask_idx, :]  # [hidden_size]
+    
+    # Step 2: Extract XGBoost features using the existing feature extraction logic
+    # extract_features is defined in this file (generate.py)
+    remaining_tokens = gen_length - curr_pos
+    
+    (initial_confidence, initial_entropy, initial_shannon_entropy, 
+     additional_features, ar_context_tokens) = extract_features(
+        logits=logits,
+        x=x,
+        gen_start=gen_start,
+        gen_length=gen_length,
+        tokenizer=tokenizer,
+        verbose=False,
+        curr_pos=curr_pos
+    )
+    
+    # Get features for current position
+    features_dict = additional_features.get(curr_pos, {})
+    
+    # Add position_relative feature (not in extract_features output)
+    position_relative = round(curr_pos / gen_length, 4)
+    
+    # Convert features dict to tensor (match the EXACT order used in training)
+    # Must match FEATURE_COLS from train_scheduler_head_features.py
+    feature_names = [
+        'position_relative',  # Will be added manually
+        # Confidence features (positions 0-9)
+        'conf_0', 'conf_1', 'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
+        # Shannon entropy features (positions 0-9)
+        'shannon_entropy_0', 'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
+        'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9',
+        # Aggregate features
+        'top1_margin', 'mean_confidence', 'shannon_mean_entropy',
+        'conf_std', 'shannon_entropy_std',
+        'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
+    ]
+    
+    # Build feature vector
+    feature_values = [position_relative]  # First feature
+    for name in feature_names[1:]:  # Skip first since we added it manually
+        feature_values.append(features_dict.get(name, 0.0))  # Use 0.0 as fallback
+    
+    xgb_features = torch.tensor(
+        feature_values,
+        dtype=torch.float32,
+        device=mlp_scheduler.device if hasattr(mlp_scheduler, 'device') else torch.device('cuda')
+    ).unsqueeze(0)  # [1, 30]
+    
+    # Step 3: Combine features (with or without hidden states)
+    if use_hidden_states:
+        combined_features = torch.cat([xgb_features, hidden_state_at_pos.unsqueeze(0)], dim=1)  # [1, 30+4096]
+    else:
+        combined_features = xgb_features  # [1, 30] - features only
+    
+    # DEBUG: Print all 30 features for comparison with training data
+    if verbose:
+        print(f"\n{'='*80}")
+        print(f"🔍 DEBUG: All 30 Feature Values at curr_pos={curr_pos}")
+        print(f"{'='*80}")
+        
+        # Print all 30 features in the same order as FEATURE_COLS from training
+        feature_names_ordered = [
+            'position_relative',
+            'conf_0', 'conf_1', 'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
+            'shannon_entropy_0', 'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
+            'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9',
+            'top1_margin', 'mean_confidence', 'shannon_mean_entropy',
+            'conf_std', 'shannon_entropy_std',
+            'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
+        ]
+        
+        for i, feat_name in enumerate(feature_names_ordered, 1):
+            if feat_name == 'position_relative':
+                val = position_relative
+            else:
+                val = features_dict.get(feat_name, -999.0)
+            print(f"   [{i:2d}] {feat_name:<25} {val:.4f}")
+        
+        if use_hidden_states:
+            print(f"\n   Hidden state stats:")
+            print(f"      Mean: {hidden_state_at_pos.mean().item():.4f}")
+            print(f"      Std:  {hidden_state_at_pos.std().item():.4f}")
+            print(f"      Min:  {hidden_state_at_pos.min().item():.4f}")
+            print(f"      Max:  {hidden_state_at_pos.max().item():.4f}")
+            print(f"\n   Position info:")
+            print(f"      gen_start: {gen_start}")
+            print(f"      curr_pos: {curr_pos}")
+            print(f"      first_mask_idx: {first_mask_idx}")
+        else:
+            print(f"\n   Using FEATURES ONLY (no hidden states)")
+        
+        print(f"{'='*80}\n")
+    
+    # Step 4: Run MLP to get class predictions
+    with torch.no_grad():
+        class_logits = mlp_scheduler(combined_features)  # [1, 4]
+        predicted_class = torch.argmax(class_logits, dim=1).item()  # 0, 1, 2, or 3
+        predicted_block_size = predicted_class + 1  # Convert to 1, 2, 3, or 4
+    
+    # Apply conservative offset (subtract to make block size smaller)
+    block_size_before_offset = predicted_block_size
+    predicted_block_size = predicted_block_size - block_size_offset
+    
+    # Ensure block_size is at least 1 and at most min(remaining_tokens, max_block_size)
+    block_size_final = max(1, min(predicted_block_size, remaining_tokens, max_block_size))
+    
+    # Print prediction details
+    if verbose:
+        class_probs = torch.softmax(class_logits, dim=1)[0]  # [4]
+        print(f"📊 PREDICTION (MLP with Features + Hidden States):")
+        print(f"   Class probabilities: [1tok: {class_probs[0]:.3f}, 2tok: {class_probs[1]:.3f}, "
+              f"3tok: {class_probs[2]:.3f}, 4tok: {class_probs[3]:.3f}]")
+        print(f"   Predicted class: {predicted_class} → {predicted_block_size} tokens")
+        print(f"   remaining_tokens = {remaining_tokens}")
+        if block_size_offset > 0:
+            print(f"   block_size (after offset -{block_size_offset}) = {predicted_block_size}")
+        print(f"   block_size_final (clamped 1-{max_block_size}) = {block_size_final}")
+        print(f"{'='*80}\n")
+    
+    return block_size_final, logits
+
+
 def predict_block_size_xgboost(
     logits,
     x,
@@ -407,16 +587,16 @@ def generate_vanilla(model, tokenizer, prompt, steps=128, gen_length=128, block_
 def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_length=128, block_length=128, 
                      temperature=0., cfg_scale=0., remasking='low_confidence', mask_id=126336, 
                      expected_answer=None, use_regression=True, block_size_offset=0, max_block_size=10,
-                     scheduler_type='xgboost', baseline_strategy=None):
+                     scheduler_type='xgboost', baseline_strategy=None, mlp_scheduler=None):
     '''
-    Dynamic block size generation using scheduler (XGBoost or Neural Scheduler Head).
+    Dynamic block size generation using scheduler (XGBoost, Neural Scheduler Head, or MLP with Features).
     
     Args:
         model: Mask predictor.
         tokenizer: Tokenizer for decoding outputs.
         prompt: A tensor of shape (1, L).
         scheduler: Trained XGBoost model for predicting block sizes. If None, uses fixed block_length.
-                   Not used if scheduler_type='neural'.
+                   Not used if scheduler_type='neural' or 'mlp_features'.
         steps: Sampling steps (not used in dynamic version, kept for compatibility).
         gen_length: Generated answer length.
         block_length: Default block length if scheduler is None.
@@ -428,8 +608,9 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
         use_regression: If True, scheduler is regression model; else classification (only for XGBoost).
         block_size_offset: Integer offset to subtract from predicted block_size for conservative sizing (default: 0).
         max_block_size: Maximum allowed block size to cap predictions (default: 10, matching training data cap).
-        scheduler_type: Type of scheduler to use. 'xgboost' or 'neural' (default: 'xgboost').
+        scheduler_type: Type of scheduler to use. 'xgboost', 'neural', or 'mlp_features' (default: 'xgboost').
                         'xgboost': Uses XGBoost model with extracted features
+                        'mlp_features': Uses external MLP with XGBoost features + hidden states
                         'neural': Uses trained scheduler head in the model
         baseline_strategy: Baseline mode for testing. None (use scheduler), 'always_1', 'always_2', 'always_4', 'random_uniform' (default: None).
                            'random_uniform' splits equally across 1 to max_block_size (e.g., 25-25-25-25 for max=4).
@@ -453,6 +634,8 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
     print(f"   - mask_id: {mask_id}")
     if scheduler_type == 'neural':
         print(f"   - Scheduler: Neural Scheduler Head (end-to-end learned)")
+    elif scheduler_type == 'mlp_features':
+        print(f"   - Scheduler: External MLP (XGBoost features + hidden states)")
     elif scheduler_type == 'xgboost':
         print(f"   - Scheduler: {'XGBoost' if scheduler is not None else 'Fixed block size'}")
     else:
@@ -499,6 +682,28 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
                 verbose=True
             )
         
+        elif scheduler_type == 'mlp_features':
+            # External MLP scheduler: uses both XGBoost features AND hidden states
+            if cfg_scale > 0.:
+                # CFG not yet supported with MLP scheduler
+                raise NotImplementedError("CFG (cfg_scale > 0) not yet supported with mlp_features scheduler")
+            
+            block_size, logits = predict_block_size_mlp_features(
+                model=model,
+                mlp_scheduler=mlp_scheduler,
+                tokenizer=tokenizer,
+                x=x,
+                curr_pos=curr_pos,
+                gen_start=gen_start,
+                gen_length=gen_length,
+                scheduler=scheduler,
+                use_regression=use_regression,
+                block_size_offset=block_size_offset,
+                max_block_size=max_block_size,
+                verbose=True,
+                use_hidden_states=False  # Features-only MLP (30 dims)
+            )
+        
         elif scheduler_type == 'xgboost':
             # XGBoost scheduler: get logits first, then extract features
             if cfg_scale > 0.:
@@ -528,17 +733,17 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
             )
         
         else:
-            raise ValueError(f"Unknown scheduler_type: {scheduler_type}. Must be 'neural' or 'xgboost'")
+            raise ValueError(f"Unknown scheduler_type: {scheduler_type}. Must be 'neural', 'mlp_features', or 'xgboost'")
 
         # Generate tokens for current block (semi-AR: unmask next N tokens left-to-right)
         # Use the predicted tokens with added noise for sampling
         logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
         x0 = torch.argmax(logits_with_noise, dim=-1)
 
-        # Hardcode block_size for first iteration only (for debugging)
+        # # Hardcode block_size for first iteration only (for debugging)
         # if curr_pos == 0:
-        #     block_size = 7
-        # After first iteration, use scheduler/default block_size
+        #     block_size = 2
+        # # After first iteration, use scheduler/default block_size
 
         # Print decoded x and x0
         # print(f"The decoded x:\n {tokenizer.batch_decode(x, skip_special_tokens=False)[0]}")

@@ -2068,8 +2068,8 @@ def generate_interpolations(
                 correct_answer=correct_answer,  # Pass correct answer for optimization
                 instruction=None,  # prompt already has instruction
                 block_size_max=block_size_max
-            )
-            
+    )
+    
             # Add metadata (use saved curr_pos_metadata to ensure correct value)
             sample_data['question_id'] = question_id
             sample_data['question'] = prompt
@@ -2359,7 +2359,7 @@ def generate_train_val_test_splits(
         with open(txt_path, 'w') as f:
             f.write('\n'.join(map(str, qids)))
         print(f"   {split_name}: {txt_path} ({len(qids)} question_ids)")
-    
+        
     # Print sample question_ids for verification
     print(f"\n🔍 Sample question_ids from each set:")
     print(f"   Train (first 10): {splits['train'][:10]}")
@@ -2454,7 +2454,8 @@ def run_inference_with_scheduler(
     output_path="./output/charles_inference_results.csv",
     scheduler_type='xgboost',
     evaluation_split=None,
-    baseline_strategy=None
+    baseline_strategy=None,
+    mlp_scheduler=None
 ):
     """
     Run scheduler-guided dynamic block size inference (CHARLES method).
@@ -2502,6 +2503,8 @@ def run_inference_with_scheduler(
             print(f"   Random uniform across 1 to {max_block_size} tokens (deterministic, untrained baseline)")
     elif scheduler_type == 'neural':
         print("🚀 CHARLES: Neural Scheduler Head-Guided Dynamic Block Size Inference")
+    elif scheduler_type == 'mlp_features':
+        print("🚀 CHARLES: External MLP (Features + Hidden States) Dynamic Block Size Inference")
     elif scheduler_type == 'xgboost':
         print("🚀 CHARLES: XGBoost-Guided Dynamic Block Size Inference")
     else:
@@ -2520,8 +2523,12 @@ def run_inference_with_scheduler(
     elif scheduler_type == 'neural':
         print(f"📥 Using Neural Scheduler Head (trained with model)")
         scheduler = None  # Not needed for neural scheduler
+    elif scheduler_type == 'mlp_features':
+        print(f"📥 Using External MLP Scheduler (features + hidden states)")
+        print(f"   MLP checkpoint will be loaded by run_inference.py")
+        scheduler = None  # XGBoost scheduler still needed for feature extraction
     else:
-        raise ValueError(f"Unknown scheduler_type: {scheduler_type}. Must be 'neural' or 'xgboost'")
+        raise ValueError(f"Unknown scheduler_type: {scheduler_type}. Must be 'neural', 'mlp_features', or 'xgboost'")
     
     # Filter to specific split if requested
     questions_csv_path = load_split(questions_csv_path, evaluation_split)
@@ -2529,7 +2536,7 @@ def run_inference_with_scheduler(
     # Load questions (already filtered by load_split if evaluation_split was set)
     df_questions = pd.read_csv(questions_csv_path)
     total_in_split = len(df_questions)
-    
+        
     # Limit to num_questions if specified (applied to the filtered split)
     if num_questions is not None:
         df_questions = df_questions.head(num_questions)
@@ -2605,7 +2612,8 @@ def run_inference_with_scheduler(
             block_size_offset=block_size_offset,
             max_block_size=max_block_size,
             scheduler_type=scheduler_type,
-            baseline_strategy=baseline_strategy
+            baseline_strategy=baseline_strategy,
+            mlp_scheduler=mlp_scheduler
         )
         
         end_time = time.time()
@@ -2640,7 +2648,7 @@ def run_inference_with_scheduler(
         print(f"\n⏱️  Generation time: {generation_time:.2f} seconds")
         print(f"  Tokens per second: {gen_length/generation_time:.2f}")
         print(f"{'='*80}\n")
-        
+    
         # Store results
         results.append({
             'question': row['question'],

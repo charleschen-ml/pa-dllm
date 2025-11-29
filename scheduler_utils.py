@@ -180,8 +180,11 @@ def evaluate_classifier(y_true, y_pred, y_pred_proba=None, num_classes=2,
     
     # Classification report (per-class metrics)
     class_labels = [f'{i} tok' + ('s' if i > 1 else '') for i in range(1, num_classes + 1)]
+    # Explicitly specify labels to handle missing classes gracefully
+    labels_list = list(range(num_classes))  # [0, 1, 2, 3] for 4 classes
     report_dict = classification_report(
         y_true, y_pred,
+        labels=labels_list,
         target_names=class_labels,
         digits=3,
         output_dict=True,
@@ -207,8 +210,8 @@ def evaluate_classifier(y_true, y_pred, y_pred_proba=None, num_classes=2,
             f1_per_class.append(0.0)
             support_per_class.append(0)
     
-    # Confusion matrix
-    cm = confusion_matrix(y_true, y_pred)
+    # Confusion matrix (explicitly specify labels to get correct shape even with missing classes)
+    cm = confusion_matrix(y_true, y_pred, labels=labels_list)
     
     # Compile results
     results = {
@@ -320,7 +323,9 @@ def plot_confusion_matrix(y_true, y_pred, num_classes, save_path="./output/sched
         num_classes: Number of classes
         save_path: Path to save the plot
     """
-    cm = confusion_matrix(y_true, y_pred)
+    # Explicitly specify labels to get correct shape even with missing classes
+    labels_list = list(range(num_classes))
+    cm = confusion_matrix(y_true, y_pred, labels=labels_list)
     
     # Adjust figure size based on number of classes
     fig_size = (8, 6) if num_classes <= 5 else (10, 8)
