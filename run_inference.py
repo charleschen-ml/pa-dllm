@@ -27,6 +27,78 @@ from inference import run_inference_with_scheduler, write_to_json_csv, generate_
 from generate import generate_vanilla, generate_custom, generate_charles
 from calculate_interpolations import calculate_interpolations
 
+# ==============================================================================
+# MLP SCHEDULER MODEL DEFINITION
+# ==============================================================================
+import torch.nn as nn
+
+class FeatureOnlySchedulerMLP(nn.Module):
+    """
+    Simple MLP that takes XGBoost features (+ optionally hidden states) and predicts block_size.
+    
+    Supports both classification (4 classes: 1, 2, 3, 4 tokens) and regression (block_size_rel).
+    """
+    
+    def __init__(self, input_dim=30, hidden_dims=[256, 128, 64], num_classes=None):
+        """
+        Args:
+            input_dim: Number of input features (30 for XGBoost features, or 30+4096 for features+hidden)
+            hidden_dims: List of hidden layer dimensions
+            num_classes: If provided, do classification with num_classes outputs.
+                        If None, do regression with 1 output in [0, 1].
+        """
+        super().__init__()
+        
+        self.num_classes = num_classes
+        
+        layers = []
+        prev_dim = input_dim
+        
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(0.1))  # Regularization
+            prev_dim = hidden_dim
+        
+        self.backbone = nn.Sequential(*layers)
+        
+        # Output layer
+        if num_classes is not None:
+            # Classification: output logits for each class
+            self.output_layer = nn.Linear(prev_dim, num_classes)
+        else:
+            # Regression: output single value in [0, 1]
+            self.output_layer = nn.Sequential(
+                nn.Linear(prev_dim, 1),
+                nn.Sigmoid()
+            )
+        
+        # Store device for convenience
+        self.device = None
+    
+    def forward(self, features):
+        """
+        Args:
+            features: [batch_size, input_dim] tensor of features
+        
+        Returns:
+            If classification: [batch_size, num_classes] logits
+            If regression: [batch_size] predictions in [0, 1]
+        """
+        out = self.backbone(features)  # [batch_size, hidden_dim]
+        out = self.output_layer(out)  # [batch_size, num_classes] or [batch_size, 1]
+        
+        if self.num_classes is None:
+            # Regression: squeeze to [batch_size]
+            return out.squeeze(-1)
+        else:
+            # Classification: return logits [batch_size, num_classes]
+            return out
+
+# ==============================================================================
+# MODEL LOADING
+# ==============================================================================
+
 # FASTEST: Load model weights and recreate architecture
 print("Loading saved model (fast method)...")
 
@@ -196,20 +268,21 @@ if __name__ == '__main__':
     ########################################################
     # CONFIGURATION: Choose mode
     ########################################################
-    USE_CUSTOM_MODEL = False  # True: use custom local modeling_llada.py, False: use HF model
+    USE_CUSTOM_MODEL = None  # True: use custom local modeling_llada.py, False: use HF model
                                # NOTE: Will be automatically set to True if SCHEDULER_TYPE='neural'
     USE_GREEDY = True  # True: use greedy mode when generating training samples, False: use AR mode
     USE_PARALLEL = False  # Set to False for sequential mode (needed for batch inference)
-    NUM_GPUS = 4  # Only used if USE_PARALLEL=True
-    NUM_QUESTIONS = 100  # Number of questions to process (None = process all questions in CSV)
-    BLOCK_SIZE_MAX = 2  # Maximum block size to cap sweep values at (None = no cap)
+    NUM_GPUS = 2  # Only used if USE_PARALLEL=True
+    NUM_QUESTIONS = None  # Number of questions to process (None = process all questions in CSV)
+    BLOCK_SIZE_MAX = 4  # Maximum block size to cap sweep values at (None = no cap)
     EVALUATION_SPLIT = 'test'  # Which split to evaluate on: None, 'train', 'val', 'test'
                              # Set to 'train'/'val'/'test' to run inference only on that split
-    BASELINE_STRATEGY = 'random_50_50'  # Baseline strategy for testing: None, 'always_1', 'always_2', 'random_50_50'
+    BASELINE_STRATEGY = None  # Baseline strategy for testing: None, 'always_1', 'always_2', 'always_4', 'random_uniform'
                               # None: Use XGBoost scheduler (normal mode)
+                              # 'random_uniform': Splits equally across 1 to block_size_max (e.g., 25-25-25-25 for max=4)
                               # 'always_1': Always predict block_size=1 (conservative, ~100% acc, 1.0x speedup)
-                              # 'always_2': Always predict block_size=2 (aggressive, upper bound speedup)
-                              # 'random_50_50': Random 50/50 between 1 and 2 (deterministic, untrained baseline)
+                              # 'always_2': Always predict block_size=2 (aggressive, higher speedup)
+                              # 'always_4': Always predict block_size=4 (very aggressive, upper bound speedup for 4tok)
     
     # Load simple config (safer)
     from trl import ModelConfig
@@ -327,37 +400,37 @@ if __name__ == '__main__':
     ########################################################
     # Augment one sample
     ########################################################
-    # mode_str = "GREEDY" if USE_GREEDY else "AR"
-    # print(f"🚀 Starting augment_one_sample ({mode_str} mode)...")
-    # start_time = time.time()
+    mode_str = "GREEDY" if USE_GREEDY else "AR"
+    print(f"🚀 Starting augment_one_sample ({mode_str} mode)...")
+    start_time = time.time()
     
-    # training_samples = augment_one_sample_dispatch(
-    #     use_greedy=USE_GREEDY,
-    #     model=model,
-    #     tokenizer=tokenizer,
-    #     device=device,
-    #     prompt=prompt,
-    #     model_args=model_args,
-    #     gen_length=32,
-    #     base_block_length=1,
-    #     steps=32,
-    #     correct_answer=correct_answer,
-    #     break_after_answer_found=True,  # Set to False to continue augmentation after answer found
-    #     block_size_max=BLOCK_SIZE_MAX
-    # )
+    training_samples = augment_one_sample_dispatch(
+        use_greedy=USE_GREEDY,
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        prompt=prompt,
+        model_args=model_args,
+        gen_length=32,
+        base_block_length=1,
+        steps=32,
+        correct_answer=correct_answer,
+        break_after_answer_found=True,  # Set to False to continue augmentation after answer found
+        block_size_max=BLOCK_SIZE_MAX
+    )
     
-    # end_time = time.time()
-    # elapsed_time = end_time - start_time
-    # print(f"\n⏱️  TIMING REPORT:")
-    # print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"\n⏱️  TIMING REPORT:")
+    print(f"  ⏱️  Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.1f} minutes)")
 
     ########################################################
     # Augment multiple samples: Sequential or Parallel
-    ########################################################
+    #######################################################
     # start_time = time.time()
     
     # # Determine how many questions to process
-    # csv_path = "./data/gsm8k_correct.csv"
+    # csv_path = "./data/gsm8k_correct_5k_to_8k.csv"
     # df_temp = pd.read_csv(csv_path)
     # total_questions = len(df_temp)
     # print(f"📊 Found {total_questions} questions in {csv_path}")
@@ -379,8 +452,8 @@ if __name__ == '__main__':
     #         base_block_length=1,
     #         steps=32,
     #         break_after_answer_found=True,
-    #         output_json_path="./data/sft_training_samples_multi_greedy_parallel.json",
-    #         output_csv_path="./data/sft_training_samples_multi_greedy_parallel.csv",
+    #         output_json_path="./data/sft_training_samples_multi_greedy_parallel_4tok_5k_to_8k.json",
+    #         output_csv_path="./data/sft_training_samples_multi_greedy_parallel_4tok_5k_to_8k.csv",
     #         instruction=instruction,
     #         num_gpus=NUM_GPUS,
     #         use_greedy=USE_GREEDY,
@@ -434,8 +507,19 @@ if __name__ == '__main__':
     ########################################################
     # Run inference with scheduler (CHARLES)
     ########################################################
+    # ============================================================================
+    # MLP SCHEDULER CONFIGURATION - Easy Mode Switching
+    # ============================================================================
+    # Choose one of three modes:
+    #   'dual_stream'   - Features + Hidden States with fusion (73.9% test acc)
+    #   'hidden_only'   - Hidden States only (72.6% test acc) 
+    #   'features_only' - XGBoost Features only (65.4% test acc)
+    # ============================================================================
+    MLP_MODE = 'hidden_only'  # ⭐ CHANGE THIS TO SWITCH MODES
+    # ============================================================================
+    
     # Configuration
-    SCHEDULER_TYPE = 'xgboost'  # 'xgboost' or 'neural'
+    SCHEDULER_TYPE = 'mlp_features'  # 'xgboost', 'neural', or 'mlp_features'
     
     # Auto-enable custom model if using neural scheduler
     if SCHEDULER_TYPE == 'neural' and not USE_CUSTOM_MODEL:
@@ -448,15 +532,86 @@ if __name__ == '__main__':
         print("="*80 + "\n")
         raise ValueError("USE_CUSTOM_MODEL must be True when SCHEDULER_TYPE='neural'")
     
+    # Load external MLP scheduler if using mlp_features
+    mlp_scheduler = None
+    if SCHEDULER_TYPE == 'mlp_features':
+        # Configure based on selected mode
+        if MLP_MODE == 'dual_stream':
+            MLP_CHECKPOINT_PATH = "checkpoints/scheduler_head_dual_stream/mlp_best.pt"
+            USE_DUAL_STREAM_INFERENCE = True
+            MODE_DESCRIPTION = "Dual-Stream (Features + Hidden States with Fusion)"
+        elif MLP_MODE == 'hidden_only':
+            MLP_CHECKPOINT_PATH = "checkpoints/ablation_hidden_only/mlp_best.pt"
+            INPUT_DIM = 4096  # Hidden states only
+            USE_DUAL_STREAM_INFERENCE = False
+            MODE_DESCRIPTION = "Hidden States Only"
+        elif MLP_MODE == 'features_only':
+            MLP_CHECKPOINT_PATH = "checkpoints/ablation_features_only/mlp_best.pt"
+            INPUT_DIM = 30  # Features only
+            USE_DUAL_STREAM_INFERENCE = False
+            MODE_DESCRIPTION = "XGBoost Features Only"
+        else:
+            raise ValueError(f"Invalid MLP_MODE: {MLP_MODE}. Choose 'dual_stream', 'hidden_only', or 'features_only'")
+        
+        print("\n" + "="*80)
+        print(f"📥 Loading External MLP Scheduler: {MODE_DESCRIPTION}")
+        print("="*80)
+        print(f"   Mode: {MLP_MODE}")
+        print(f"   Checkpoint: {MLP_CHECKPOINT_PATH}")
+        
+        if USE_DUAL_STREAM_INFERENCE:
+            # Dual-stream model - need to import DualStreamSchedulerMLP
+            from train_scheduler_head_features import DualStreamSchedulerMLP
+            HIDDEN_DIMS = [256, 128]
+            NUM_CLASSES = 4
+            
+            mlp_scheduler = DualStreamSchedulerMLP(
+                xgb_feature_dim=30,
+                hidden_size=4096,
+                projection_dim=512,
+                mlp_hidden_dims=HIDDEN_DIMS,
+                num_classes=NUM_CLASSES
+            ).to(device).eval()
+            
+            print(f"   Architecture: Dual-Stream MLP")
+            print(f"     Stream 1 (Hidden): [seq_len, 4096] → MLP → pool → [4]")
+            print(f"     Stream 2 (Features): [30] → MLP → [4]")
+            print(f"     Fusion: Per-class weighted sum")
+        else:
+            # Single-stream model
+            HIDDEN_DIMS = [256, 128]
+            NUM_CLASSES = 4
+            
+            mlp_scheduler = FeatureOnlySchedulerMLP(
+                input_dim=INPUT_DIM,
+                hidden_dims=HIDDEN_DIMS,
+                num_classes=NUM_CLASSES
+            ).to(device).eval()
+            
+            print(f"   Input dim: {INPUT_DIM}")
+            print(f"   Architecture: {INPUT_DIM} → {' → '.join(map(str, HIDDEN_DIMS))} → {NUM_CLASSES}")
+        
+        # Load checkpoint
+        checkpoint = torch.load(MLP_CHECKPOINT_PATH, map_location=device)
+        mlp_scheduler.load_state_dict(checkpoint['model_state_dict'])
+        mlp_scheduler.device = device  # Store device for convenience
+        mlp_scheduler.mlp_mode = MLP_MODE  # Store mode for generate.py to use
+        mlp_scheduler.use_dual_stream = USE_DUAL_STREAM_INFERENCE  # Store for generate.py
+        
+        print(f"✅ MLP Scheduler loaded successfully!")
+        print(f"   Trained for {checkpoint['epoch']} epochs")
+        print(f"   Best validation loss: {checkpoint.get('val_loss', 'N/A')}")
+        print("="*80 + "\n")
+    
     SCHEDULER_PATH = "./cache/block_size_scheduler.json"  # Path to trained XGBoost model (only for 'xgboost')
     USE_REGRESSION = False  # True for regression, False for classification (only for 'xgboost')
-    GEN_LENGTH = 32
+    GEN_LENGTH = 128
     STEPS = 32  # Not used in dynamic version, kept for compatibility
     TEMPERATURE = 0.
     CFG_SCALE = 0.
     REMASKING = 'low_confidence'
     BLOCK_SIZE_OFFSET = 0  # Conservative offset: subtract from predicted block_size (0=no offset)
-    MAX_BLOCK_SIZE = 10  # Maximum allowed block size (should match training data cap)
+    MAX_BLOCK_SIZE = 4  # Maximum allowed block size (should match training data cap)
     
     # Run scheduler inference
     output_suffix = f"_{EVALUATION_SPLIT}" if EVALUATION_SPLIT else ""
@@ -479,5 +634,6 @@ if __name__ == '__main__':
         output_path=f"./output/charles_inference_results{output_suffix}.csv",
         scheduler_type=SCHEDULER_TYPE,
         evaluation_split=EVALUATION_SPLIT,
-        baseline_strategy=BASELINE_STRATEGY
+        baseline_strategy=BASELINE_STRATEGY,
+        mlp_scheduler=mlp_scheduler
     )

@@ -133,14 +133,16 @@ def predict_block_size_mlp_features(
     block_size_offset=0,
     max_block_size=10,
     verbose=True,
-    use_hidden_states=False  # NEW: Set to True to use hidden states, False for features-only
+    use_hidden_states=False,  # Set to True to use hidden states
+    use_features=True,  # Set to False for hidden-only mode
+    use_dual_stream=False  # Set to True for dual-stream model
 ):
     """
-    Predict block size using external MLP (features-only OR features + hidden states).
+    Predict block size using external MLP (features-only, hidden-only, or dual-stream).
     
     Args:
         model: LLaDA model (for extracting hidden states if use_hidden_states=True)
-        mlp_scheduler: External trained MLP model (FeatureOnlySchedulerMLP)
+        mlp_scheduler: External trained MLP model (FeatureOnlySchedulerMLP or DualStreamSchedulerMLP)
         tokenizer: Tokenizer for decoding (for debug prints and feature extraction)
         x: Current sequence tensor [batch_size, seq_len]
         curr_pos: Current position in generation (relative to gen_start)
@@ -151,7 +153,9 @@ def predict_block_size_mlp_features(
         block_size_offset: Conservative offset to subtract from predicted block_size
         max_block_size: Maximum allowed block size
         verbose: If True, print prediction details
-        use_hidden_states: If True, extract and use hidden states (30+4096 dims). If False, features-only (30 dims).
+        use_hidden_states: If True, extract and use hidden states
+        use_features: If True, extract and use XGBoost features
+        use_dual_stream: If True, pass features and hidden_states separately (for DualStreamSchedulerMLP)
     
     Returns:
         block_size: Final predicted block size (int, one of 1/2/3/4)
@@ -177,7 +181,13 @@ def predict_block_size_mlp_features(
         
         # Get hidden states from last layer
         last_hidden_states = outputs.hidden_states[-1]  # [batch_size, seq_len, hidden_size]
-        hidden_state_at_pos = last_hidden_states[0, first_mask_idx, :]  # [hidden_size]
+        
+        if use_dual_stream:
+            # For dual-stream: extract FULL hidden states (will be pooled by model)
+            hidden_states_full = last_hidden_states[0, :, :].unsqueeze(0).float()  # [1, seq_len, hidden_size]
+        else:
+            # For single-stream: extract hidden state at generation position
+            hidden_state_at_pos = last_hidden_states[0, first_mask_idx, :]  # [hidden_size]
     
     # Step 2: Extract XGBoost features using the existing feature extraction logic
     # extract_features is defined in this file (generate.py)
@@ -226,54 +236,83 @@ def predict_block_size_mlp_features(
         device=mlp_scheduler.device if hasattr(mlp_scheduler, 'device') else torch.device('cuda')
     ).unsqueeze(0)  # [1, 30]
     
-    # Step 3: Combine features (with or without hidden states)
-    if use_hidden_states:
-        combined_features = torch.cat([xgb_features, hidden_state_at_pos.unsqueeze(0)], dim=1)  # [1, 30+4096]
+    # Step 3: Prepare inputs based on mode
+    if use_dual_stream:
+        # Dual-stream: pass features and hidden states separately
+        # (will be processed by separate MLPs and fused)
+        pass  # Will be handled in Step 4
     else:
-        combined_features = xgb_features  # [1, 30] - features only
+        # Single-stream: combine features based on mode
+        if use_hidden_states and use_features:
+            # Both: concatenate features + hidden states
+            combined_features = torch.cat([xgb_features, hidden_state_at_pos.unsqueeze(0)], dim=1)  # [1, 30+4096]
+        elif use_hidden_states and not use_features:
+            # Hidden-only: just hidden states
+            combined_features = hidden_state_at_pos.unsqueeze(0).float()  # [1, 4096]
+        elif not use_hidden_states and use_features:
+            # Features-only: just XGBoost features
+            combined_features = xgb_features  # [1, 30]
+        else:
+            raise ValueError("Must use at least one of: use_hidden_states or use_features")
     
-    # DEBUG: Print all 30 features for comparison with training data
+    # DEBUG: Print feature/hidden state info
     if verbose:
         print(f"\n{'='*80}")
-        print(f"🔍 DEBUG: All 30 Feature Values at curr_pos={curr_pos}")
+        if use_hidden_states and not use_features:
+            print(f"🔍 DEBUG: Hidden States Only at curr_pos={curr_pos}")
+        elif use_features and not use_hidden_states:
+            print(f"🔍 DEBUG: Features Only at curr_pos={curr_pos}")
+        else:
+            print(f"🔍 DEBUG: Features + Hidden States at curr_pos={curr_pos}")
         print(f"{'='*80}")
         
-        # Print all 30 features in the same order as FEATURE_COLS from training
-        feature_names_ordered = [
-            'position_relative',
-            'conf_0', 'conf_1', 'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
-            'shannon_entropy_0', 'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
-            'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9',
-            'top1_margin', 'mean_confidence', 'shannon_mean_entropy',
-            'conf_std', 'shannon_entropy_std',
-            'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
-        ]
-        
-        for i, feat_name in enumerate(feature_names_ordered, 1):
-            if feat_name == 'position_relative':
-                val = position_relative
-            else:
-                val = features_dict.get(feat_name, -999.0)
-            print(f"   [{i:2d}] {feat_name:<25} {val:.4f}")
+        if use_features:
+            # Print all 30 features in the same order as FEATURE_COLS from training
+            feature_names_ordered = [
+                'position_relative',
+                'conf_0', 'conf_1', 'conf_2', 'conf_3', 'conf_4', 'conf_5', 'conf_6', 'conf_7', 'conf_8', 'conf_9',
+                'shannon_entropy_0', 'shannon_entropy_1', 'shannon_entropy_2', 'shannon_entropy_3', 'shannon_entropy_4',
+                'shannon_entropy_5', 'shannon_entropy_6', 'shannon_entropy_7', 'shannon_entropy_8', 'shannon_entropy_9',
+                'top1_margin', 'mean_confidence', 'shannon_mean_entropy',
+                'conf_std', 'shannon_entropy_std',
+                'top4_conf_min', 'next4_conf_min', 'top8_conf_min', 'next8_conf_min'
+            ]
+            
+            for i, feat_name in enumerate(feature_names_ordered, 1):
+                if feat_name == 'position_relative':
+                    val = position_relative
+                else:
+                    val = features_dict.get(feat_name, -999.0)
+                print(f"   [{i:2d}] {feat_name:<25} {val:.4f}")
         
         if use_hidden_states:
-            print(f"\n   Hidden state stats:")
-            print(f"      Mean: {hidden_state_at_pos.mean().item():.4f}")
-            print(f"      Std:  {hidden_state_at_pos.std().item():.4f}")
-            print(f"      Min:  {hidden_state_at_pos.min().item():.4f}")
-            print(f"      Max:  {hidden_state_at_pos.max().item():.4f}")
+            if use_dual_stream:
+                print(f"\n   Hidden state stats (full sequence):")
+                print(f"      Shape: {hidden_states_full.shape}")
+                print(f"      Mean: {hidden_states_full.mean().item():.4f}")
+                print(f"      Std:  {hidden_states_full.std().item():.4f}")
+            else:
+                print(f"\n   Hidden state stats (single position):")
+                print(f"      Mean: {hidden_state_at_pos.mean().item():.4f}")
+                print(f"      Std:  {hidden_state_at_pos.std().item():.4f}")
+                print(f"      Min:  {hidden_state_at_pos.min().item():.4f}")
+                print(f"      Max:  {hidden_state_at_pos.max().item():.4f}")
             print(f"\n   Position info:")
             print(f"      gen_start: {gen_start}")
             print(f"      curr_pos: {curr_pos}")
             print(f"      first_mask_idx: {first_mask_idx}")
-        else:
-            print(f"\n   Using FEATURES ONLY (no hidden states)")
         
         print(f"{'='*80}\n")
     
     # Step 4: Run MLP to get class predictions
     with torch.no_grad():
-        class_logits = mlp_scheduler(combined_features)  # [1, 4]
+        if use_dual_stream:
+            # Dual-stream: pass features and hidden states separately
+            class_logits = mlp_scheduler(xgb_features, hidden_states_full)  # [1, 4]
+        else:
+            # Single-stream: pass combined features
+            class_logits = mlp_scheduler(combined_features)  # [1, 4]
+        
         predicted_class = torch.argmax(class_logits, dim=1).item()  # 0, 1, 2, or 3
         predicted_block_size = predicted_class + 1  # Convert to 1, 2, 3, or 4
     
@@ -287,7 +326,18 @@ def predict_block_size_mlp_features(
     # Print prediction details
     if verbose:
         class_probs = torch.softmax(class_logits, dim=1)[0]  # [4]
-        print(f"📊 PREDICTION (MLP with Features + Hidden States):")
+        
+        # Determine mode description
+        if use_dual_stream:
+            mode_desc = "Dual-Stream MLP (Features + Hidden States with Fusion)"
+        elif use_hidden_states and use_features:
+            mode_desc = "MLP (Features + Hidden States)"
+        elif use_hidden_states:
+            mode_desc = "MLP (Hidden States Only)"
+        else:
+            mode_desc = "MLP (Features Only)"
+        
+        print(f"📊 PREDICTION ({mode_desc}):")
         print(f"   Class probabilities: [1tok: {class_probs[0]:.3f}, 2tok: {class_probs[1]:.3f}, "
               f"3tok: {class_probs[2]:.3f}, 4tok: {class_probs[3]:.3f}]")
         print(f"   Predicted class: {predicted_class} → {predicted_block_size} tokens")
@@ -688,6 +738,25 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
                 # CFG not yet supported with MLP scheduler
                 raise NotImplementedError("CFG (cfg_scale > 0) not yet supported with mlp_features scheduler")
             
+            # Auto-detect mode from mlp_scheduler (set in run_inference.py)
+            mlp_mode = getattr(mlp_scheduler, 'mlp_mode', 'hidden_only')
+            use_dual_stream = getattr(mlp_scheduler, 'use_dual_stream', False)
+            
+            # Set flags based on mode
+            if mlp_mode == 'dual_stream':
+                use_hidden_states = True
+                use_features = True
+            elif mlp_mode == 'hidden_only':
+                use_hidden_states = True
+                use_features = False
+            elif mlp_mode == 'features_only':
+                use_hidden_states = False
+                use_features = True
+            else:
+                # Fallback (shouldn't happen)
+                use_hidden_states = True
+                use_features = False
+            
             block_size, logits = predict_block_size_mlp_features(
                 model=model,
                 mlp_scheduler=mlp_scheduler,
@@ -701,7 +770,9 @@ def generate_charles(model, tokenizer, prompt, scheduler=None, steps=128, gen_le
                 block_size_offset=block_size_offset,
                 max_block_size=max_block_size,
                 verbose=True,
-                use_hidden_states=False  # Features-only MLP (30 dims)
+                use_hidden_states=use_hidden_states,
+                use_features=use_features,
+                use_dual_stream=use_dual_stream
             )
         
         elif scheduler_type == 'xgboost':
