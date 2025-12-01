@@ -515,7 +515,7 @@ if __name__ == '__main__':
     #   'hidden_only'   - Hidden States only (72.6% test acc) 
     #   'features_only' - XGBoost Features only (65.4% test acc)
     # ============================================================================
-    MLP_MODE = 'hidden_only'  # ⭐ CHANGE THIS TO SWITCH MODES
+    MLP_MODE = 'features_only'  # ⭐ CHANGE THIS TO SWITCH MODES
     # ============================================================================
     
     # Configuration

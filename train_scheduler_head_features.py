@@ -307,7 +307,7 @@ def split_by_question_flexible(data_path: str, data_format: str, val_split: floa
         import json
         with open(data_path, 'r') as f:
             all_samples = json.load(f)
-    
+        
         # Group samples by question_id
         question_to_samples = {}
         for idx, sample in enumerate(all_samples):
@@ -380,7 +380,7 @@ def split_by_question_flexible(data_path: str, data_format: str, val_split: floa
         raise ValueError(f"Unsupported data_format: {data_format}")
 
 
-def create_collate_fn(model=None, use_hidden_states=False, device='cuda', use_dual_stream=False):
+def create_collate_fn(model=None, use_hidden_states=False, device='cuda', use_dual_stream=False, use_features=True):
     """
     Factory function to create a collate function with optional hidden state extraction.
     
@@ -389,6 +389,7 @@ def create_collate_fn(model=None, use_hidden_states=False, device='cuda', use_du
         use_hidden_states: Whether to extract hidden states
         device: Device for model inference
         use_dual_stream: If True, return full hidden states separately (not concatenated)
+        use_features: If True, include XGBoost features (default: True)
     
     Returns:
         collate_fn function
@@ -521,10 +522,16 @@ def create_collate_fn(model=None, use_hidden_states=False, device='cuda', use_du
                         'labels': labels  # [batch_size]
                     }
                 else:
-                    # Concatenate XGBoost features + hidden states: [batch_size, 30 + 2048]
-                    features = torch.cat([xgb_features, hidden_states_tensor], dim=1)
+                    # Single-stream mode: concatenate or use only hidden states
+                    if use_features:
+                        # Concatenate XGBoost features + hidden states: [batch_size, 30 + hidden_dim]
+                        features = torch.cat([xgb_features, hidden_states_tensor], dim=1)
+                    else:
+                        # Hidden states only: [batch_size, hidden_dim]
+                        features = hidden_states_tensor
+                    
                     result = {
-                        'features': features,  # [batch_size, 30 + hidden_dim]
+                        'features': features,  # [batch_size, 30 + hidden_dim] or [batch_size, hidden_dim]
                         'labels': labels  # [batch_size]
                     }
         else:
@@ -950,13 +957,21 @@ def validate(model, dataloader, criterion, device, use_classification=False, use
         
         return {
             'loss': total_loss / num_batches,
-        'mse': mse,
-        'mae': mae,
-        'r2': r2
-    }
+            'mse': mse,
+            'mae': mae,
+            'r2': r2
+        }
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--freeze_stream', type=str, default=None, choices=['hidden', 'feature'],
+                        help='For ablation: freeze either hidden_mlp or feature_mlp')
+    parser.add_argument('--checkpoint_dir', type=str, default=None,
+                        help='Override checkpoint directory')
+    args = parser.parse_args()
+    
     # Set random seeds for reproducibility
     SEED = 42
     torch.manual_seed(SEED)
@@ -967,50 +982,123 @@ def main():
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
+    # ============================================================================
+    # TRAINING MODE CONFIGURATION - Easy Mode Switching
+    # ============================================================================
+    # Choose one of three modes:
+    #   'dual_stream'   - Features + Hidden States with fusion (best performance)
+    #   'hidden_only'   - Hidden States only (simpler, still good)
+    #   'features_only' - XGBoost Features only (baseline)
+    # ============================================================================
+    TRAINING_MODE = 'dual_stream'  # ⭐ CHANGE THIS TO SWITCH MODES
+    # ============================================================================
+    
+    # Auto-configure based on mode
+    if TRAINING_MODE == 'dual_stream':
+        mode_config = {
+            'use_dual_stream': True,
+            'use_hidden_states': True,
+            'use_features': True,
+            'checkpoint_dir': 'checkpoints/scheduler_head_dual_stream',
+            'batch_size': 4,  # Smaller batch for hidden states
+            'num_epochs': 10,
+            'early_stopping_patience': 5,
+        }
+    elif TRAINING_MODE == 'hidden_only':
+        mode_config = {
+            'use_dual_stream': False,
+            'use_hidden_states': True,
+            'use_features': False,  # Don't use XGBoost features
+            'checkpoint_dir': 'checkpoints/ablation_hidden_only',
+            'batch_size': 4,  # Smaller batch for hidden states
+            'num_epochs': 10,
+            'early_stopping_patience': 5,
+        }
+    elif TRAINING_MODE == 'features_only':
+        mode_config = {
+            'use_dual_stream': False,
+            'use_hidden_states': False,  # Don't load LLaDA model
+            'use_features': True,
+            'checkpoint_dir': 'checkpoints/ablation_features_only',
+            'batch_size': 8,  # Larger batch (no hidden states = less memory)
+            'num_epochs': 10,
+            'early_stopping_patience': 5,
+        }
+    else:
+        raise ValueError(f"Invalid TRAINING_MODE: {TRAINING_MODE}. Choose 'dual_stream', 'hidden_only', or 'features_only'")
+    
     # Configuration
     CONFIG = {
         # Data config
         'data_format': 'json',  # 'csv' or 'json' (JSON needed for hidden states)
         'data_path': 'data/sft_training_samples_multi_greedy_parallel.json',  # Path to data
         'csv_path': 'data/sft_training_samples_multi_greedy_parallel.csv',  # CSV for features (hybrid mode: ALL 30 FEATURES NOW INCLUDED!)
-        'num_questions': 10,  # Number of questions to use (None = use all, 1 = overfit test)
+        'num_questions': None,  # Number of questions to use (None = use all, 1 = overfit test)
         'val_split': 0.15,  # 15% for validation
         'test_split': 0.15,  # 15% for test
         
-        # Model config
-        'use_dual_stream': True,  # ⭐ NEW: Use dual-stream architecture (hidden states + features with per-class weights)
-        'hidden_dims': [256, 128],  # MLP hidden layer dimensions (for both streams)
+        # Model config (auto-configured based on TRAINING_MODE)
+        'use_dual_stream': mode_config['use_dual_stream'],
+        'use_features': mode_config['use_features'],
+        'hidden_dims': [256, 128],  # MLP hidden layer dimensions
         'projection_dim': 512,  # Project hidden states from 4096 → 512 before pooling
         'use_classification': True,  # True = 4-class classification (1, 2, 3, 4 tokens), False = regression
-        'num_classes': 4,  # 4-class classification: class 0 = 1 token, class 1 = 2 tokens, class 2 = 3 tokens, class 3 = 4 tokens
-        'use_hidden_states': True,  # ⭐ REQUIRED for dual-stream: Extract LLaDA hidden states
+        'num_classes': 4,  # 4-class classification
+        'use_hidden_states': mode_config['use_hidden_states'],
         
-        # Training config
-        'batch_size': 4,  # Smaller batch when using hidden states (more memory)
-        'num_epochs': 1,  # More epochs to learn fusion weights
-        'early_stopping_patience': 10,  # Be patient with dual-stream
+        # Training config (auto-configured based on TRAINING_MODE)
+        'batch_size': mode_config['batch_size'],
+        'num_epochs': mode_config['num_epochs'],
+        'early_stopping_patience': mode_config['early_stopping_patience'],
         'use_class_weights': True,  # Balance classes (CRITICAL for imbalanced data!)
         
         # Optimizer config
         'learning_rate': 1e-3,  # Higher LR for simple MLP
-        'weight_decay': 0.01,  # L2 regularization for AdamW
+        'weight_decay': 0.1,  # L2 regularization for AdamW
         
         # System config
-        'checkpoint_dir': 'checkpoints/scheduler_head_dual_stream',
+        'checkpoint_dir': mode_config['checkpoint_dir'],
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'seed': SEED,
     }
+    
+    # Override checkpoint_dir if provided
+    if args.checkpoint_dir:
+        CONFIG['checkpoint_dir'] = args.checkpoint_dir
+        print(f"📁 Overriding checkpoint_dir: {CONFIG['checkpoint_dir']}")
+    
+    # Print ablation info if freezing a stream
+    if args.freeze_stream:
+        print("\n" + "="*60)
+        print(f"🧪 ABLATION EXPERIMENT: Freezing {args.freeze_stream} stream")
+        print("="*60)
+        if args.freeze_stream == 'hidden':
+            print("   Hidden state MLP: ❄️  FROZEN (random init, no updates)")
+            print("   Feature MLP:      🔥 TRAINABLE")
+            print("   Fusion weights:   🔥 TRAINABLE")
+            print("\n   Expected: Fusion weights should shift toward features (hidden→0%, features→100%)")
+        else:
+            print("   Hidden state MLP: 🔥 TRAINABLE")
+            print("   Feature MLP:      ❄️  FROZEN (random init, no updates)")
+            print("   Fusion weights:   🔥 TRAINABLE")
+            print("\n   Expected: Fusion weights should shift toward hidden states (hidden→100%, features→0%)")
+        print("="*60 + "\n")
     
     use_hidden_states = CONFIG.get('use_hidden_states', False)
     data_format = CONFIG.get('data_format', 'csv')
     
     print("="*60)
-    if use_hidden_states:
-        print("🚀 TRAINING HYBRID SCHEDULER MLP")
-        print("   (30 XGBoost features + LLaDA hidden states)")
-    else:
-        print("🚀 TRAINING FEATURE-ONLY SCHEDULER MLP")
-        print("   (Using 30 XGBoost features - No Transformer)")
+    print(f"🚀 TRAINING MODE: {TRAINING_MODE.upper().replace('_', '-')}")
+    if TRAINING_MODE == 'dual_stream':
+        print("   Architecture: Dual-Stream MLP")
+        print("   Inputs: 30 XGBoost features + Hidden states (4096 dims)")
+        print("   Fusion: Per-class learnable weights")
+    elif TRAINING_MODE == 'hidden_only':
+        print("   Architecture: Single-Stream MLP")
+        print("   Inputs: Hidden states only (4096 dims)")
+    elif TRAINING_MODE == 'features_only':
+        print("   Architecture: Single-Stream MLP")
+        print("   Inputs: 30 XGBoost features only")
     print("="*60)
     print(f"Configuration:")
     for key, value in CONFIG.items():
@@ -1039,9 +1127,8 @@ def main():
         llada_model, tokenizer, _ = load_model(model_args, use_custom=False)
         llada_model.eval()  # Ensure eval mode
         
-        # Freeze all parameters
-        for param in llada_model.parameters():
-            param.requires_grad = False
+        # Freeze all parameters (FAST version - single call instead of loop!)
+        llada_model.requires_grad_(False)
         
         # Get actual hidden size from model
         hidden_size = llada_model.config.hidden_size
@@ -1079,8 +1166,14 @@ def main():
         # Single-stream architecture (original)
         # Determine input dimension
         if use_hidden_states:
-            input_dim = 30 + hidden_size  # XGBoost features + hidden states
-            print(f"   Input dimension: 30 (features) + {hidden_size} (hidden states) = {input_dim}")
+            # Check if user wants hidden-only or features+hidden
+            use_features = CONFIG.get('use_features', True)  # Default: use both
+            if use_features:
+                input_dim = 30 + hidden_size  # XGBoost features + hidden states
+                print(f"   Input dimension: 30 (features) + {hidden_size} (hidden states) = {input_dim}")
+            else:
+                input_dim = hidden_size  # Only hidden states
+                print(f"   Input dimension: {hidden_size} (hidden states only)")
         else:
             input_dim = 30  # Only XGBoost features
         
@@ -1103,6 +1196,29 @@ def main():
     trainable_params = sum(p.numel() for p in mlp_model.parameters() if p.requires_grad)
     print(f"   Total parameters: {total_params:,}")
     print(f"   Trainable parameters: {trainable_params:,}")
+    
+    # ===== Apply Freezing for Ablation Experiments =====
+    if args.freeze_stream and use_dual_stream:
+        print(f"\n🔒 Freezing {args.freeze_stream} stream...")
+        if args.freeze_stream == 'hidden':
+            # Freeze hidden_mlp (keep it at random initialization)
+            for param in mlp_model.hidden_mlp.parameters():
+                param.requires_grad = False
+            print(f"   ❄️  Frozen hidden_mlp: {sum(p.numel() for p in mlp_model.hidden_mlp.parameters()):,} parameters")
+            print(f"   🔥 Trainable feature_mlp: {sum(p.numel() for p in mlp_model.feature_mlp.parameters() if p.requires_grad):,} parameters")
+        elif args.freeze_stream == 'feature':
+            # Freeze feature_mlp (keep it at random initialization)
+            for param in mlp_model.feature_mlp.parameters():
+                param.requires_grad = False
+            print(f"   🔥 Trainable hidden_mlp: {sum(p.numel() for p in mlp_model.hidden_mlp.parameters() if p.requires_grad):,} parameters")
+            print(f"   ❄️  Frozen feature_mlp: {sum(p.numel() for p in mlp_model.feature_mlp.parameters()):,} parameters")
+        
+        # Always keep fusion weights trainable
+        print(f"   🔥 Trainable fusion weights: {mlp_model.class_weights.numel()} parameters")
+        
+        # Re-count trainable parameters
+        trainable_params = sum(p.numel() for p in mlp_model.parameters() if p.requires_grad)
+        print(f"   Total trainable after freezing: {trainable_params:,}")
     
     # 2. Load dataset with question-level split (to avoid data leakage)
     print("\n[2/5] Loading dataset...")
@@ -1162,7 +1278,8 @@ def main():
         model=llada_model,
         use_hidden_states=use_hidden_states,
         device=device,
-        use_dual_stream=use_dual_stream
+        use_dual_stream=use_dual_stream,
+        use_features=CONFIG.get('use_features', True)  # Pass the use_features flag
     )
     
     train_loader = DataLoader(
