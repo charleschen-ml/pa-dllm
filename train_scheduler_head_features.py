@@ -991,41 +991,53 @@ def main():
     #   'features_only' - XGBoost Features only (baseline)
     # ============================================================================
     TRAINING_MODE = 'dual_stream'  # ⭐ CHANGE THIS TO SWITCH MODES
+    VERIFICATION_RUN = False  # ⭐ Set to True to save to *_test directory (won't overwrite!)
     # ============================================================================
     
     # Auto-configure based on mode
     if TRAINING_MODE == 'dual_stream':
+        checkpoint_base = 'checkpoints/scheduler_head_dual_stream'
         mode_config = {
             'use_dual_stream': True,
             'use_hidden_states': True,
             'use_features': True,
-            'checkpoint_dir': 'checkpoints/scheduler_head_dual_stream',
+            'checkpoint_dir': checkpoint_base,
             'batch_size': 4,  # Smaller batch for hidden states
-            'num_epochs': 10,
+            'num_epochs': 3 if VERIFICATION_RUN else 10,  # Quick check for verification
             'early_stopping_patience': 5,
         }
     elif TRAINING_MODE == 'hidden_only':
+        checkpoint_base = 'checkpoints/ablation_hidden_only'
         mode_config = {
             'use_dual_stream': False,
             'use_hidden_states': True,
             'use_features': False,  # Don't use XGBoost features
-            'checkpoint_dir': 'checkpoints/ablation_hidden_only',
+            'checkpoint_dir': checkpoint_base,
             'batch_size': 4,  # Smaller batch for hidden states
-            'num_epochs': 10,
+            'num_epochs': 3 if VERIFICATION_RUN else 10,  # Quick check for verification
             'early_stopping_patience': 5,
         }
     elif TRAINING_MODE == 'features_only':
+        checkpoint_base = 'checkpoints/ablation_features_only'
         mode_config = {
             'use_dual_stream': False,
             'use_hidden_states': False,  # Don't load LLaDA model
             'use_features': True,
-            'checkpoint_dir': 'checkpoints/ablation_features_only',
+            'checkpoint_dir': checkpoint_base,
             'batch_size': 8,  # Larger batch (no hidden states = less memory)
-            'num_epochs': 10,
+            'num_epochs': 3 if VERIFICATION_RUN else 10,  # Quick check for verification
             'early_stopping_patience': 5,
         }
     else:
         raise ValueError(f"Invalid TRAINING_MODE: {TRAINING_MODE}. Choose 'dual_stream', 'hidden_only', or 'features_only'")
+    
+    # Append '_test' suffix if verification run (won't overwrite existing checkpoints!)
+    if VERIFICATION_RUN:
+        mode_config['checkpoint_dir'] = checkpoint_base + '_test'
+        print(f"\n🧪 VERIFICATION RUN: Using test checkpoint directory")
+        print(f"   Original: {checkpoint_base}")
+        print(f"   Test:     {mode_config['checkpoint_dir']}")
+        print(f"   ✅ Original checkpoints will NOT be overwritten!\n")
     
     # Configuration
     CONFIG = {
